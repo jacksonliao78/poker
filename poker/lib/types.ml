@@ -85,3 +85,5 @@ type config = {
   small_blind : int;
   big_blind : int;
 }
+
+let default_config = { starting_chips = 500; small_blind = 5; big_blind = 10 }

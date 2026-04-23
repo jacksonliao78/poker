@@ -1,2 +1,5 @@
 (library
- (name poker))
+ (name poker)
+ (libraries lwt.unix)
+ (preprocess
+  (pps lwt_ppx)))
