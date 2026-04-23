@@ -1,4 +1,21 @@
 (executable
  (public_name poker)
  (name main)
+ (modules main)
  (libraries poker))
+
+(executable
+ (public_name poker_server)
+ (name server)
+ (modules server)
+ (libraries poker lwt.unix)
+ (preprocess
+  (pps lwt_ppx)))
+
+(executable
+ (public_name poker_client)
+ (name client)
+ (modules client)
+ (libraries poker lwt.unix)
+ (preprocess
+  (pps lwt_ppx)))
