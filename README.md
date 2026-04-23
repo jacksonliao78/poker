@@ -1,4 +1,4 @@
-# cs3110project
+# OCaml-Poker
 
 Team members:
 
