@@ -52,12 +52,25 @@ let rec listen_for_updates input =
 
 let command_to_message line =
   let trimmed = String.trim line in
+  let words =
+    trimmed |> String.split_on_char ' ' |> List.filter (fun word -> word <> "")
+  in
   if trimmed = "" then None
   else if trimmed = "quit" then Some Poker.Protocol.Disconnect
   else if String.length trimmed >= 6 && String.sub trimmed 0 6 = "/name " then
     Some
       (Poker.Protocol.Join (String.sub trimmed 6 (String.length trimmed - 6)))
-  else Some (Poker.Protocol.Send_chat trimmed)
+  else
+    match words with
+    | [ "fold" ] -> Some (Poker.Protocol.Player_action Poker.Types.Fold)
+    | [ "call" ] -> Some (Poker.Protocol.Player_action Poker.Types.Call)
+    | [ "check" ] -> Some (Poker.Protocol.Player_action Poker.Types.Check)
+    | [ "raise"; amount ] -> (
+        match int_of_string_opt amount with
+        | Some amount when amount > 0 ->
+            Some (Poker.Protocol.Player_action (Poker.Types.Raise amount))
+        | _ -> Some (Poker.Protocol.Send_chat trimmed))
+    | _ -> Some (Poker.Protocol.Send_chat trimmed)
 
 let rec read_commands output =
   let%lwt line = Lwt_io.read_line_opt Lwt_io.stdin in
@@ -90,7 +103,7 @@ let run_client host port =
   in
   let%lwt () =
     Lwt_io.printl
-      "Type messages to chat, `/name <new name>` to rename, or `quit`."
+      "Type chat, `/name <new name>`, poker actions like `fold`, `call`, `check`, `raise 20`, or `quit`."
   in
   let listener =
     Lwt.catch
