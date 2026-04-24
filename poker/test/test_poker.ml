@@ -94,6 +94,20 @@ let test_fold_marks_player_folded _ =
       assert_equal 0 next_game.table.turn_index
   | Ok _ -> assert_failure "expected next turn after fold"
 
+let test_check_while_facing_bet_returns_error _ =
+  let lobby = Poker.Lobby.empty () in
+  let lobby, _ = Poker.Lobby.add_player lobby in
+  let lobby, _ = Poker.Lobby.add_player lobby in
+  let lobby, _ = Poker.Lobby.add_player lobby in
+  let lobby, _ = Poker.Lobby.add_player lobby in
+  let game = Poker.Game.start (Poker.Lobby.players lobby) in
+  match
+    Poker.Game.apply_action game ~player_id:(List.nth game.Poker.Types.players 3).id
+      Poker.Types.Check
+  with
+  | Error message -> assert_equal "Cannot check when facing a bet." message
+  | Ok _ -> assert_failure "expected check to fail while facing a bet"
+
 let tests =
   "poker"
   >::: [
@@ -107,6 +121,8 @@ let tests =
          "call_matches_current_bet_and_advances_turn"
          >:: test_call_matches_current_bet_and_advances_turn;
          "fold_marks_player_folded" >:: test_fold_marks_player_folded;
+         "check_while_facing_bet_returns_error"
+         >:: test_check_while_facing_bet_returns_error;
        ]
 
 let () = run_test_tt_main tests

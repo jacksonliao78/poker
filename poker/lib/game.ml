@@ -72,13 +72,16 @@ let apply_to_player game player_id f =
       else if current_player.status <> Active then
         Error "You cannot act right now."
       else
-        let updated_player, table_delta = f current_player game.table in
-        let players =
-          List.map
-            (fun player -> if player.id = player_id then updated_player else player)
-            game.players
-        in
-        Ok (players, table_delta)
+        try
+          let updated_player, table_delta = f current_player game.table in
+          let players =
+            List.map
+              (fun player -> if player.id = player_id then updated_player else player)
+              game.players
+          in
+          Ok (players, table_delta)
+        with
+        | Invalid_argument message -> Error message
 
 let advance_after_action game =
   let remaining_players = active_players game.players in
