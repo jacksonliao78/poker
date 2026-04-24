@@ -89,23 +89,133 @@ and resolve_showdown game =
     | King -> 13
     | Ace -> 14
   in
+  let compare_int_desc left right = Stdlib.compare right left in
+  let rec compare_rank_lists left right =
+    match (left, right) with
+    | [], [] -> 0
+    | [], _ -> -1
+    | _, [] -> 1
+    | left_head :: left_tail, right_head :: right_tail ->
+        let cmp = Stdlib.compare left_head right_head in
+        if cmp <> 0 then cmp else compare_rank_lists left_tail right_tail
+  in
+  let combinations cards =
+    let rec pick n source =
+      if n = 0 then [ [] ]
+      else
+        match source with
+        | [] -> []
+        | head :: tail ->
+            let with_head =
+              List.map (fun choice -> head :: choice) (pick (n - 1) tail)
+            in
+            let without_head = pick n tail in
+            with_head @ without_head
+    in
+    pick 5 cards
+  in
+  let straight_high ranks_desc =
+    let unique_desc =
+      List.sort_uniq compare_int_desc ranks_desc
+    in
+    let with_wheel =
+      if List.mem 14 unique_desc then unique_desc @ [ 1 ] else unique_desc
+    in
+    let rec scan = function
+      | a :: (b :: (c :: (d :: (e :: _)))) as all_tail ->
+          if a = b + 1 && b = c + 1 && c = d + 1 && d = e + 1 then Some a
+          else scan (List.tl all_tail)
+      | _ -> None
+    in
+    scan with_wheel
+  in
+  let evaluate_five cards =
+    let ranks_desc =
+      cards
+      |> List.map (fun card -> rank_value card.rank)
+      |> List.sort compare_int_desc
+    in
+    let rank_counts =
+      List.fold_left
+        (fun counts rank ->
+          let current =
+            match List.assoc_opt rank counts with
+            | Some count -> count
+            | None -> 0
+          in
+          (rank, current + 1)
+          :: List.remove_assoc rank counts)
+        [] ranks_desc
+    in
+    let groups =
+      List.sort
+        (fun (rank_a, count_a) (rank_b, count_b) ->
+          let count_cmp = Stdlib.compare count_b count_a in
+          if count_cmp <> 0 then count_cmp else Stdlib.compare rank_b rank_a)
+        rank_counts
+    in
+    let is_flush =
+      match cards with
+      | [] -> false
+      | first :: rest -> List.for_all (fun card -> card.suit = first.suit) rest
+    in
+    let straight = straight_high ranks_desc in
+    match (is_flush, straight, groups) with
+    | true, Some 14, _ -> (9, [ 14 ])
+    | true, Some high, _ -> (8, [ high ])
+    | _, _, [ (quad_rank, 4); (kicker, 1) ] -> (7, [ quad_rank; kicker ])
+    | _, _, [ (trip_rank, 3); (pair_rank, 2) ] -> (6, [ trip_rank; pair_rank ])
+    | true, None, _ -> (5, ranks_desc)
+    | false, Some high, _ -> (4, [ high ])
+    | _, _, [ (trip_rank, 3); (kicker_a, 1); (kicker_b, 1) ] ->
+        let kickers = List.sort compare_int_desc [ kicker_a; kicker_b ] in
+        (3, trip_rank :: kickers)
+    | _, _, [ (high_pair, 2); (low_pair, 2); (kicker, 1) ] ->
+        let pair_ranks = List.sort compare_int_desc [ high_pair; low_pair ] in
+        (2, pair_ranks @ [ kicker ])
+    | _, _, [ (pair_rank, 2); (kicker_a, 1); (kicker_b, 1); (kicker_c, 1) ] ->
+        let kickers =
+          List.sort compare_int_desc [ kicker_a; kicker_b; kicker_c ]
+        in
+        (1, pair_rank :: kickers)
+    | _ -> (0, ranks_desc)
+  in
+  let compare_scores (category_a, ranks_a) (category_b, ranks_b) =
+    let category_cmp = Stdlib.compare category_a category_b in
+    if category_cmp <> 0 then category_cmp
+    else compare_rank_lists ranks_a ranks_b
+  in
+  let evaluate_seven cards =
+    let best_five_hands = combinations cards in
+    match best_five_hands with
+    | [] -> (0, [])
+    | first :: rest ->
+        List.fold_left
+          (fun best hand ->
+            let score = evaluate_five hand in
+            if compare_scores score best > 0 then score else best)
+          (evaluate_five first) rest
+  in
   let contenders =
     List.filter (fun player -> player.status <> Folded) game.players
   in
-  let best_rank player =
+  let hand_score player =
     let all_cards = List.concat [ player.hole_cards; game.table.community_cards ] in
-    List.fold_left
-      (fun best card -> max best (rank_value card.rank))
-      0 all_cards
+    evaluate_seven all_cards
   in
   match contenders with
   | [] -> []
   | first :: rest ->
       let best =
-        List.fold_left (fun current player -> max current (best_rank player))
-          (best_rank first) rest
+        List.fold_left
+          (fun current player ->
+            let score = hand_score player in
+            if compare_scores score current > 0 then score else current)
+          (hand_score first) rest
       in
-      List.filter (fun player -> best_rank player = best) contenders
+      List.filter
+        (fun player -> compare_scores (hand_score player) best = 0)
+        contenders
 
 let deal_hole_cards players deck =
   let player_count = List.length players in
@@ -169,6 +279,28 @@ let betting_round_complete players current_bet =
       || player.round_bet = current_bet)
     players
 
+let big_blind_index game =
+  let player_count = List.length game.players in
+  (game.table.dealer_index + 2) mod player_count
+
+(* In preflop with no raise beyond the posted big blind, action must return to
+   the big blind for their option before the street can close. *)
+let preflop_big_blind_option_pending game next_index =
+  game.table.street = Preflop
+  && game.table.current_bet = game.big_blind
+  &&
+  let bb = List.nth game.players (big_blind_index game) in
+  bb.status = Active
+  &&
+  let bb_next =
+    next_active_index game.players (big_blind_index game)
+  in
+  bb_next = Some (big_blind_index game)
+  &&
+  match next_index with
+  | Some index -> index = big_blind_index game
+  | None -> false
+
 let commit_chips player amount =
   let committed = min amount player.chips in
   let chips = player.chips - committed in
@@ -216,6 +348,7 @@ let advance_after_action game =
     Hand_complete (game, List.hd remaining_players)
   else if
     betting_round_complete game.players game.table.current_bet
+    && not (preflop_big_blind_option_pending game next_index)
     && (game.table.current_bet <> 0 || zero_bet_round_closed)
   then
     advance_street game
