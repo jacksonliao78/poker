@@ -12,8 +12,10 @@ val red : style -> string -> string
 val green : style -> string -> string
 val yellow : style -> string -> string
 val cyan : style -> string -> string
+val money : style -> int -> string
+val command : style -> string -> string
 val render_card : style -> Types.card -> string
 val render_cards : style -> Types.card list -> string
 val render_street : Types.street -> string
 val render_status : Types.player_status -> string
-val render_legal_action : Protocol.legal_action -> string
+val render_legal_action : style -> Protocol.legal_action -> string
