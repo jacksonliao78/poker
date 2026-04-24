@@ -21,6 +21,7 @@ type ui_state = {
   mutable events : ui_event list;
   mutable input_buffer : string;
   mutable action_index : int option;
+  mutable show_recent_activity : bool;
   redraw : bool;
   style : Poker.Terminal_ui.style;
 }
@@ -63,6 +64,7 @@ let create_ui_state host port =
     events = [];
     input_buffer = "";
     action_index = None;
+    show_recent_activity = true;
     redraw;
     style = terminal_style redraw;
   }
@@ -200,18 +202,24 @@ let render_screen state =
   let events =
     state.events |> List.rev |> List.map (render_event state) |> String.concat "\n"
   in
+  let recent =
+    if state.show_recent_activity then
+      [
+        "";
+        bold state.style "Recent";
+        (if events = "" then dim state.style "(no messages yet)" else events);
+      ]
+    else []
+  in
   String.concat "\n"
-    [
-      bold state.style
-        (Printf.sprintf "Poker  %s:%d  Player %s" state.host state.port player);
-      String.make 72 '-';
-      main;
-      "";
-      bold state.style "Recent";
-      (if events = "" then dim state.style "(no messages yet)" else events);
-      "";
-      prompt_label state ^ state.input_buffer;
-    ]
+    ([
+       bold state.style
+         (Printf.sprintf "Poker  %s:%d  Player %s" state.host state.port player);
+       String.make 72 '-';
+       main;
+     ]
+    @ recent
+    @ [ ""; prompt_label state ^ state.input_buffer ])
 
 let redraw state =
   if state.redraw then
@@ -303,6 +311,32 @@ let reset_input state =
   state.input_buffer <- "";
   state.action_index <- None
 
+let set_recent_preference state value =
+  match String.lowercase_ascii value with
+  | "show" ->
+      state.show_recent_activity <- true;
+      add_event state Info "Recent activity is visible.";
+      Ok None
+  | "hide" ->
+      state.show_recent_activity <- false;
+      add_event state Info "Recent activity is hidden.";
+      Ok None
+  | "clear" ->
+      state.events <- [];
+      Ok None
+  | _ -> Error "Use /pref recent show, /pref recent hide, or /pref recent clear."
+
+let handle_preference state words =
+  match words with
+  | [ "/pref"; "recent"; value ] -> set_recent_preference state value
+  | [ "/pref" ] ->
+      Error "Use /pref recent show, /pref recent hide, or /pref recent clear."
+  | [ "/pref"; _ ] ->
+      Error "Use /pref recent show, /pref recent hide, or /pref recent clear."
+  | "/pref" :: _ ->
+      Error "Use /pref recent show, /pref recent hide, or /pref recent clear."
+  | _ -> Error "Unknown preference command."
+
 let poker_action_allowed state action =
   let open Poker.Protocol in
   match action with
@@ -323,6 +357,8 @@ let command_to_message state line =
     Ok (Some (Poker.Protocol.Send_chat trimmed))
   else if trimmed = "/quit" then
     Ok (Some Poker.Protocol.Disconnect)
+  else if List.length words > 0 && List.hd words = "/pref" then
+    handle_preference state words
   else if String.length trimmed >= 6 && String.sub trimmed 0 6 = "/name " then
     Ok
       (Some
@@ -339,7 +375,10 @@ let command_to_message state line =
           | _ -> Some (Error "Raise needs a positive amount, e.g. /raise 20."))
       | "/raise" :: _ | "/r" :: _ ->
           Some (Error "Raise needs a positive amount, e.g. /raise 20.")
-      | _ -> Some (Error "Unknown command. Type chat without /, or use /name, /fold, /call, /check, /raise, /quit.")
+      | _ ->
+          Some
+            (Error
+               "Unknown command. Type chat without /, or use /name, /pref, /fold, /call, /check, /raise, /quit.")
     in
     match action_result with
     | None -> Ok (Some (Poker.Protocol.Send_chat trimmed))
@@ -472,7 +511,7 @@ let run_client host port =
     Poker.Wire.send_client_message output (Poker.Protocol.Join join_name)
   in
   add_event state Info
-    "Use chat without a prefix. Commands: /name <new name>, /fold, /call, /check, /raise <amount>, /quit.";
+    "Use chat without a prefix. Commands: /name <new name>, /pref recent show|hide|clear, /fold, /call, /check, /raise <amount>, /quit.";
   let%lwt () = redraw state in
   let listener =
     Lwt.catch
