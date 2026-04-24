@@ -46,6 +46,15 @@ let broadcast_lobby state =
   let snapshot = Poker.Lobby.snapshot state.lobby in
   broadcast state (Poker.Protocol.Lobby_update snapshot)
 
+let send_game_update game client =
+  match Poker.Protocol.player_view_of_game game ~player_id:client.id with
+  | None -> Lwt.return_unit
+  | Some view -> safe_send client.output (Poker.Protocol.Game_update view)
+
+let broadcast_game_update state game =
+  (* Each view is personalized because hole cards are private. *)
+  Lwt_list.iter_p (send_game_update game) state.clients
+
 (* Normalizes player name. *)
 let trim_name raw_name =
   let trimmed = String.trim raw_name in
@@ -188,6 +197,7 @@ let handle_player_action state player_id action =
               let%lwt () =
                 send_balance_update next_state player_id next_game.players
               in
+              let%lwt () = broadcast_game_update next_state next_game in
               let%lwt () =
                 broadcast next_state
                   (Poker.Protocol.Info (current_turn_message next_game))
@@ -199,6 +209,7 @@ let handle_player_action state player_id action =
               let%lwt () =
                 send_balance_update next_state player_id next_game.players
               in
+              let%lwt () = broadcast_game_update next_state next_game in
               let%lwt () =
                 broadcast next_state
                   (Poker.Protocol.Info
@@ -214,6 +225,7 @@ let handle_player_action state player_id action =
               let%lwt () =
                 send_balance_update next_state player_id next_game.players
               in
+              let%lwt () = broadcast_game_update next_state next_game in
               let%lwt () =
                 broadcast next_state
                   (Poker.Protocol.Info
@@ -240,20 +252,7 @@ let start_game_if_ready state =
         (fun text -> broadcast next_state (Poker.Protocol.Info text))
         (table_setup_messages game)
     in
-    let%lwt () =
-      Lwt_list.iter_p
-        (fun client ->
-          match
-            List.find_opt
-              (fun player -> player.Poker.Types.id = client.id)
-              game.players
-          with
-          | None -> Lwt.return_unit
-          | Some player ->
-              safe_send client.output
-                (Poker.Protocol.Info (hole_cards_message player.hole_cards)))
-        next_state.clients
-    in
+    let%lwt () = broadcast_game_update next_state game in
     let%lwt () = prompt_current_player game next_state.clients in
     Lwt.return next_state
 
