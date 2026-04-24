@@ -136,13 +136,48 @@ let test_preflop_to_flop _ =
     | Poker.Game.Next_turn game -> game
     | _ -> assert_failure "expected next_turn after dealer preflop call"
   in
-  match apply_ok game 1 Poker.Types.Call with
+  let game =
+    match apply_ok game 1 Poker.Types.Call with
+    | Poker.Game.Next_turn game ->
+        assert_equal Poker.Types.Preflop game.table.street;
+        assert_equal 2 game.table.turn_index;
+        game
+    | _ -> assert_failure "expected big blind option after small blind call"
+  in
+  match apply_ok game 2 Poker.Types.Check with
   | Poker.Game.Next_turn game ->
       assert_equal Poker.Types.Flop game.table.street;
       assert_equal 3 (List.length game.table.community_cards);
       assert_bool "hole cards stay private in player state"
-        (List.for_all (fun player -> List.length player.Poker.Types.hole_cards = 2) game.players)
-  | _ -> assert_failure "expected transition to flop after preflop closes"
+        (List.for_all
+           (fun player -> List.length player.Poker.Types.hole_cards = 2)
+           game.players)
+  | _ -> assert_failure "expected transition to flop after big blind option"
+
+let test_preflop_big_blind_can_raise_option _ =
+  let game = make_four_player_game () in
+  let game =
+    match apply_ok game 3 Poker.Types.Call with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected next_turn"
+  in
+  let game =
+    match apply_ok game 0 Poker.Types.Call with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected next_turn"
+  in
+  let game =
+    match apply_ok game 1 Poker.Types.Call with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected big blind option"
+  in
+  match apply_ok game 2 (Poker.Types.Raise 10) with
+  | Poker.Game.Next_turn game ->
+      assert_equal Poker.Types.Preflop game.table.street;
+      assert_equal 20 game.table.current_bet;
+      assert_equal 50 game.table.pot;
+      assert_equal 3 game.table.turn_index
+  | _ -> assert_failure "expected preflop to continue after big blind raises"
 
 let test_checkdown_to_river _ =
   let game = make_four_player_game () in
@@ -153,7 +188,14 @@ let test_checkdown_to_river _ =
     match apply_ok game 0 Poker.Types.Call with Poker.Game.Next_turn g -> g | _ -> assert_failure "expected next_turn"
   in
   let game =
-    match apply_ok game 1 Poker.Types.Call with Poker.Game.Next_turn g -> g | _ -> assert_failure "expected flop"
+    match apply_ok game 1 Poker.Types.Call with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected big blind option"
+  in
+  let game =
+    match apply_ok game 2 Poker.Types.Check with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected flop transition"
   in
   let game =
     match apply_ok game 1 Poker.Types.Check with Poker.Game.Next_turn g -> g | _ -> assert_failure "expected flop next_turn"
@@ -184,6 +226,179 @@ let test_checkdown_to_river _ =
       assert_equal 5 (List.length game.table.community_cards)
   | _ -> assert_failure "expected river transition"
 
+let card rank suit = { Poker.Types.rank; suit }
+
+let player ?(status = Poker.Types.Active) id hole_cards =
+  {
+    Poker.Types.id;
+    name = Printf.sprintf "P%d" id;
+    controller = Poker.Types.Human;
+    chips = 100;
+    hole_cards;
+    round_bet = 0;
+    status;
+  }
+
+let showdown_game ~players ~board =
+  let table =
+    {
+      Poker.Types.community_cards = board;
+      pot = 40;
+      current_bet = 0;
+      min_raise = 10;
+      dealer_index = 0;
+      turn_index = 0;
+      street = Poker.Types.River;
+    }
+  in
+  {
+    Poker.Types.players;
+    deck = [];
+    table;
+    small_blind = 5;
+    big_blind = 10;
+  }
+
+let winner_ids winners =
+  winners
+  |> List.map (fun p -> p.Poker.Types.id)
+  |> List.sort Stdlib.compare
+
+let test_showdown_flush_beats_straight _ =
+  let board =
+    [
+      card Poker.Types.Ace Poker.Types.Hearts;
+      card Poker.Types.King Poker.Types.Hearts;
+      card Poker.Types.Seven Poker.Types.Hearts;
+      card Poker.Types.Six Poker.Types.Clubs;
+      card Poker.Types.Five Poker.Types.Diamonds;
+    ]
+  in
+  let p1 =
+    player 1
+      [
+        card Poker.Types.Three Poker.Types.Hearts;
+        card Poker.Types.Two Poker.Types.Hearts;
+      ]
+  in
+  let p2 =
+    player 2
+      [
+        card Poker.Types.Nine Poker.Types.Spades;
+        card Poker.Types.Eight Poker.Types.Clubs;
+      ]
+  in
+  let winners = Poker.Game.resolve_showdown (showdown_game ~players:[ p1; p2 ] ~board) in
+  assert_equal [ 1 ] (winner_ids winners)
+
+let test_showdown_full_house_beats_flush _ =
+  let board =
+    [
+      card Poker.Types.Ace Poker.Types.Hearts;
+      card Poker.Types.Ace Poker.Types.Diamonds;
+      card Poker.Types.Ace Poker.Types.Clubs;
+      card Poker.Types.King Poker.Types.Hearts;
+      card Poker.Types.Two Poker.Types.Hearts;
+    ]
+  in
+  let p1 =
+    player 1
+      [
+        card Poker.Types.King Poker.Types.Diamonds;
+        card Poker.Types.King Poker.Types.Spades;
+      ]
+  in
+  let p2 =
+    player 2
+      [
+        card Poker.Types.Queen Poker.Types.Hearts;
+        card Poker.Types.Jack Poker.Types.Hearts;
+      ]
+  in
+  let winners = Poker.Game.resolve_showdown (showdown_game ~players:[ p1; p2 ] ~board) in
+  assert_equal [ 1 ] (winner_ids winners)
+
+let test_showdown_pair_kicker_breaks_tie _ =
+  let board =
+    [
+      card Poker.Types.Ace Poker.Types.Clubs;
+      card Poker.Types.Seven Poker.Types.Diamonds;
+      card Poker.Types.Four Poker.Types.Spades;
+      card Poker.Types.Two Poker.Types.Clubs;
+      card Poker.Types.Nine Poker.Types.Hearts;
+    ]
+  in
+  let p1 =
+    player 1
+      [
+        card Poker.Types.Ace Poker.Types.Diamonds;
+        card Poker.Types.King Poker.Types.Diamonds;
+      ]
+  in
+  let p2 =
+    player 2
+      [
+        card Poker.Types.Ace Poker.Types.Spades;
+        card Poker.Types.Queen Poker.Types.Diamonds;
+      ]
+  in
+  let winners = Poker.Game.resolve_showdown (showdown_game ~players:[ p1; p2 ] ~board) in
+  assert_equal [ 1 ] (winner_ids winners)
+
+let test_showdown_board_tie_splits _ =
+  let board =
+    [
+      card Poker.Types.Ace Poker.Types.Spades;
+      card Poker.Types.King Poker.Types.Spades;
+      card Poker.Types.Queen Poker.Types.Spades;
+      card Poker.Types.Jack Poker.Types.Spades;
+      card Poker.Types.Ten Poker.Types.Spades;
+    ]
+  in
+  let p1 =
+    player 1
+      [
+        card Poker.Types.Two Poker.Types.Clubs;
+        card Poker.Types.Three Poker.Types.Diamonds;
+      ]
+  in
+  let p2 =
+    player 2
+      [
+        card Poker.Types.Four Poker.Types.Clubs;
+        card Poker.Types.Five Poker.Types.Diamonds;
+      ]
+  in
+  let winners = Poker.Game.resolve_showdown (showdown_game ~players:[ p1; p2 ] ~board) in
+  assert_equal [ 1; 2 ] (winner_ids winners)
+
+let test_showdown_ace_low_straight _ =
+  let board =
+    [
+      card Poker.Types.Four Poker.Types.Clubs;
+      card Poker.Types.Three Poker.Types.Diamonds;
+      card Poker.Types.Two Poker.Types.Hearts;
+      card Poker.Types.King Poker.Types.Spades;
+      card Poker.Types.Nine Poker.Types.Clubs;
+    ]
+  in
+  let p1 =
+    player 1
+      [
+        card Poker.Types.Ace Poker.Types.Diamonds;
+        card Poker.Types.Five Poker.Types.Spades;
+      ]
+  in
+  let p2 =
+    player 2
+      [
+        card Poker.Types.Ace Poker.Types.Clubs;
+        card Poker.Types.King Poker.Types.Diamonds;
+      ]
+  in
+  let winners = Poker.Game.resolve_showdown (showdown_game ~players:[ p1; p2 ] ~board) in
+  assert_equal [ 1 ] (winner_ids winners)
+
 let tests =
   "poker"
   >::: [
@@ -200,7 +415,16 @@ let tests =
          "check_while_facing_bet_returns_error"
          >:: test_check_while_facing_bet_returns_error;
          "preflop_to_flop" >:: test_preflop_to_flop;
+         "preflop_big_blind_can_raise_option"
+         >:: test_preflop_big_blind_can_raise_option;
          "checkdown_to_river" >:: test_checkdown_to_river;
+         "showdown_flush_beats_straight" >:: test_showdown_flush_beats_straight;
+         "showdown_full_house_beats_flush"
+         >:: test_showdown_full_house_beats_flush;
+         "showdown_pair_kicker_breaks_tie"
+         >:: test_showdown_pair_kicker_breaks_tie;
+         "showdown_board_tie_splits" >:: test_showdown_board_tie_splits;
+         "showdown_ace_low_straight" >:: test_showdown_ace_low_straight;
        ]
 
 let () = run_test_tt_main tests
