@@ -94,6 +94,53 @@ let test_fold_marks_player_folded _ =
       assert_equal 0 next_game.table.turn_index
   | Ok _ -> assert_failure "expected next turn after fold"
 
+let ace_spades = { Poker.Types.rank = Ace; suit = Spades }
+let ten_hearts = { Poker.Types.rank = Ten; suit = Hearts }
+
+let test_terminal_card_rendering _ =
+  let unicode = { Poker.Terminal_ui.color = false; unicode = true } in
+  let colored = { Poker.Terminal_ui.color = true; unicode = true } in
+  assert_equal "A♠" (Poker.Terminal_ui.render_card unicode ace_spades);
+  assert_equal "10♥" (Poker.Terminal_ui.render_card unicode ten_hearts);
+  assert_equal "Ace of Spades"
+    (Poker.Terminal_ui.render_card Poker.Terminal_ui.plain ace_spades);
+  assert_bool "plain fallback should not include ansi escapes"
+    (not
+       (String.contains
+          (Poker.Terminal_ui.render_card Poker.Terminal_ui.plain ten_hearts)
+          '\027'));
+  assert_bool "colored unicode should include ansi escapes"
+    (String.contains (Poker.Terminal_ui.render_card colored ten_hearts) '\027')
+
+let four_player_game () =
+  let lobby = Poker.Lobby.empty () in
+  let lobby, _ = Poker.Lobby.add_player lobby in
+  let lobby, _ = Poker.Lobby.add_player lobby in
+  let lobby, _ = Poker.Lobby.add_player lobby in
+  let lobby, _ = Poker.Lobby.add_player lobby in
+  Poker.Game.start (Poker.Lobby.players lobby)
+
+let test_player_view_keeps_hole_cards_private _ =
+  let game = four_player_game () in
+  let player = List.nth game.Poker.Types.players 0 in
+  let other = List.nth game.players 1 in
+  match Poker.Protocol.player_view_of_game game ~player_id:player.id with
+  | None -> assert_failure "expected player view"
+  | Some view ->
+      assert_equal player.hole_cards view.Poker.Protocol.your_hole_cards;
+      assert_bool "view must not expose another player's private cards"
+        (view.your_hole_cards <> other.hole_cards)
+
+let test_legal_actions_follow_turn_and_bet _ =
+  let game = four_player_game () in
+  let current = List.nth game.Poker.Types.players game.table.turn_index in
+  let waiting = List.nth game.players 0 in
+  assert_equal []
+    (Poker.Protocol.legal_actions_for_player game ~player_id:waiting.id);
+  assert_equal
+    [ Poker.Protocol.Can_fold; Can_call 10; Can_raise 10 ]
+    (Poker.Protocol.legal_actions_for_player game ~player_id:current.id)
+
 let tests =
   "poker"
   >::: [
@@ -107,6 +154,11 @@ let tests =
          "call_matches_current_bet_and_advances_turn"
          >:: test_call_matches_current_bet_and_advances_turn;
          "fold_marks_player_folded" >:: test_fold_marks_player_folded;
+         "terminal_card_rendering" >:: test_terminal_card_rendering;
+         "player_view_keeps_hole_cards_private"
+         >:: test_player_view_keeps_hole_cards_private;
+         "legal_actions_follow_turn_and_bet"
+         >:: test_legal_actions_follow_turn_and_bet;
        ]
 
 let () = run_test_tt_main tests
