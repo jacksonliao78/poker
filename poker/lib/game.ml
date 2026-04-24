@@ -138,21 +138,23 @@ let commit_chips player amount =
 let apply_to_player game player_id f =
   match List.find_opt (fun player -> player.id = player_id) game.players with
   | None -> Error "Unknown player."
-  | Some current_player ->
+  | Some current_player -> (
       let current_index = game.table.turn_index in
       let table_player = List.nth game.players current_index in
       if table_player.id <> player_id then Error "It is not your turn."
       else if current_player.status <> Active then
         Error "You cannot act right now."
       else
-        let updated_player, table_delta = f current_player game.table in
-        let players =
-          List.map
-            (fun player ->
-              if player.id = player_id then updated_player else player)
-            game.players
-        in
-        Ok (players, table_delta)
+        try
+          let updated_player, table_delta = f current_player game.table in
+          let players =
+            List.map
+              (fun player ->
+                if player.id = player_id then updated_player else player)
+              game.players
+          in
+          Ok (players, table_delta)
+        with Invalid_argument message -> Error message)
 
 let advance_after_action game =
   let remaining_players = active_players game.players in
