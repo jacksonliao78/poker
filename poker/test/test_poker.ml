@@ -66,8 +66,8 @@ let test_call_matches_current_bet_and_advances_turn _ =
   let lobby, _ = Poker.Lobby.add_player lobby in
   let game = Poker.Game.start (Poker.Lobby.players lobby) in
   match
-    Poker.Game.apply_action game ~player_id:(List.nth game.Poker.Types.players 3).id
-      Poker.Types.Call
+    Poker.Game.apply_action game
+      ~player_id:(List.nth game.Poker.Types.players 3).id Poker.Types.Call
   with
   | Error message -> assert_failure message
   | Ok (Poker.Game.Next_turn next_game) ->
@@ -85,8 +85,8 @@ let test_fold_marks_player_folded _ =
   let lobby, _ = Poker.Lobby.add_player lobby in
   let game = Poker.Game.start (Poker.Lobby.players lobby) in
   match
-    Poker.Game.apply_action game ~player_id:(List.nth game.Poker.Types.players 3).id
-      Poker.Types.Fold
+    Poker.Game.apply_action game
+      ~player_id:(List.nth game.Poker.Types.players 3).id Poker.Types.Fold
   with
   | Error message -> assert_failure message
   | Ok (Poker.Game.Next_turn next_game) ->
