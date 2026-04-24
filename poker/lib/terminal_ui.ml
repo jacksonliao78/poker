@@ -16,6 +16,8 @@ let red style text = wrap style "31" text
 let green style text = wrap style "32" text
 let yellow style text = wrap style "33" text
 let cyan style text = wrap style "36" text
+let money style amount = green style ("$" ^ string_of_int amount)
+let command style text = yellow style text
 
 let rank_short = function
   | Types.Two -> "2"
@@ -65,8 +67,11 @@ let render_status = function
   | Folded -> "folded"
   | AllIn -> "all-in"
 
-let render_legal_action = function
-  | Protocol.Can_fold -> "fold"
-  | Can_check -> "check"
-  | Can_call amount -> Printf.sprintf "call $%d" amount
-  | Can_raise amount -> Printf.sprintf "raise <amount> (min $%d)" amount
+let render_legal_action style = function
+  | Protocol.Can_fold -> command style "/fold"
+  | Can_check -> command style "/check"
+  | Can_call amount ->
+      Printf.sprintf "%s %s" (command style "/call") (money style amount)
+  | Can_raise amount ->
+      Printf.sprintf "%s <amount> (min %s)" (command style "/raise")
+        (money style amount)

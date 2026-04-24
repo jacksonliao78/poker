@@ -19,6 +19,8 @@ type ui_state = {
   mutable lobby : Poker.Protocol.lobby_snapshot option;
   mutable game : Poker.Protocol.player_view option;
   mutable events : ui_event list;
+  mutable input_buffer : string;
+  mutable action_index : int option;
   redraw : bool;
   style : Poker.Terminal_ui.style;
 }
@@ -59,6 +61,8 @@ let create_ui_state host port =
     lobby = None;
     game = None;
     events = [];
+    input_buffer = "";
+    action_index = None;
     redraw;
     style = terminal_style redraw;
   }
@@ -106,29 +110,38 @@ let render_marker player =
   in
   if markers = [] then "" else "[" ^ String.concat "," markers ^ "]"
 
+let render_money state width amount =
+  let open Poker.Terminal_ui in
+  let text = Printf.sprintf "%*s" width ("$" ^ string_of_int amount) in
+  green state.style text
+
 let render_public_player state player =
   let open Poker.Terminal_ui in
+  let raw_name =
+    if Some player.Poker.Protocol.id = state.player_id then player.name ^ " (you)"
+    else player.name
+  in
+  let padded_name = Printf.sprintf "%-24s" raw_name in
   let name =
     if Some player.Poker.Protocol.id = state.player_id then
-      bold state.style (player.name ^ " (you)")
-    else player.name
+      bold state.style padded_name
+    else padded_name
   in
   let status = render_status player.status in
   let turn_prefix = if player.is_turn then yellow state.style ">" else " " in
-  Printf.sprintf "%s %-24s %6s  bet %-5s %-7s %s" turn_prefix name
-    ("$" ^ string_of_int player.chips)
-    ("$" ^ string_of_int player.round_bet)
+  Printf.sprintf "%s %s %6s  bet %-5s %-7s %s" turn_prefix name
+    (render_money state 6 player.chips)
+    (render_money state 5 player.round_bet)
     status (render_marker player)
 
 let render_actions state actions =
   let open Poker.Terminal_ui in
   match actions with
-  | [] -> dim state.style "No poker action available. Type chat, /name <name>, or quit."
+  | [] -> dim state.style "No poker action available. Type chat, /name <name>, or /quit."
   | actions ->
       actions
-      |> List.map render_legal_action
+      |> List.map (render_legal_action state.style)
       |> String.concat "    "
-      |> green state.style
 
 let render_game state view =
   let open Poker.Terminal_ui in
@@ -137,8 +150,11 @@ let render_game state view =
   String.concat "\n"
     ([
        bold state.style "Table";
-       Printf.sprintf "Street: %s    Pot: $%d    Current bet: $%d    Min raise: $%d"
-         (render_street table.street) table.pot table.current_bet table.min_raise;
+       Printf.sprintf "Street: %s    Pot: %s    Current bet: %s    Min raise: %s"
+         (render_street table.street)
+         (money state.style table.pot)
+         (money state.style table.current_bet)
+         (money state.style table.min_raise);
        "Board: " ^ render_cards state.style table.community_cards;
        "";
        bold state.style "Seats";
@@ -194,7 +210,7 @@ let render_screen state =
       bold state.style "Recent";
       (if events = "" then dim state.style "(no messages yet)" else events);
       "";
-      prompt_label state;
+      prompt_label state ^ state.input_buffer;
     ]
 
 let redraw state =
@@ -217,7 +233,8 @@ let apply_server_message state = function
   | Poker.Protocol.Welcome { player_id; starting_chips; seats_total } ->
       state.player_id <- Some player_id;
       add_event state Info
-        (Printf.sprintf "Connected. Stack $%d across %d seats." starting_chips
+        (Printf.sprintf "Connected. Stack %s across %d seats."
+           (Poker.Terminal_ui.money state.style starting_chips)
            seats_total)
   | Lobby_update snapshot ->
       state.lobby <- Some snapshot;
@@ -257,6 +274,35 @@ let raise_minimum state =
         (function Poker.Protocol.Can_raise amount -> Some amount | _ -> None)
         view.legal_actions
 
+let action_command = function
+  | Poker.Protocol.Can_fold -> "/fold"
+  | Can_check -> "/check"
+  | Can_call _ -> "/call"
+  | Can_raise _ -> "/raise "
+
+let available_action_commands state =
+  match state.game with
+  | None -> []
+  | Some view -> List.map action_command view.Poker.Protocol.legal_actions
+
+let cycle_action state direction =
+  match available_action_commands state with
+  | [] -> ()
+  | actions ->
+      let count = List.length actions in
+      let current =
+        match state.action_index with
+        | Some index -> index
+        | None -> if direction < 0 then 0 else -1
+      in
+      let next = (current + direction + count) mod count in
+      state.action_index <- Some next;
+      state.input_buffer <- List.nth actions next
+
+let reset_input state =
+  state.input_buffer <- "";
+  state.action_index <- None
+
 let poker_action_allowed state action =
   let open Poker.Protocol in
   match action with
@@ -273,7 +319,9 @@ let command_to_message state line =
   let trimmed = String.trim line in
   let words = words_of_line line in
   if trimmed = "" then Ok None
-  else if trimmed = "quit" || trimmed = "/quit" then
+  else if String.get trimmed 0 <> '/' then
+    Ok (Some (Poker.Protocol.Send_chat trimmed))
+  else if trimmed = "/quit" then
     Ok (Some Poker.Protocol.Disconnect)
   else if String.length trimmed >= 6 && String.sub trimmed 0 6 = "/name " then
     Ok
@@ -282,16 +330,16 @@ let command_to_message state line =
   else
     let action_result =
       match words with
-      | [ "fold" ] | [ "f" ] -> Some (Ok Poker.Types.Fold)
-      | [ "call" ] | [ "c" ] -> Some (Ok Poker.Types.Call)
-      | [ "check" ] | [ "x" ] -> Some (Ok Poker.Types.Check)
-      | [ "raise"; amount ] | [ "r"; amount ] -> (
+      | [ "/fold" ] | [ "/f" ] -> Some (Ok Poker.Types.Fold)
+      | [ "/call" ] | [ "/c" ] -> Some (Ok Poker.Types.Call)
+      | [ "/check" ] | [ "/x" ] -> Some (Ok Poker.Types.Check)
+      | [ "/raise"; amount ] | [ "/r"; amount ] -> (
           match int_of_string_opt amount with
           | Some amount when amount > 0 -> Some (Ok (Poker.Types.Raise amount))
-          | _ -> Some (Error "Raise needs a positive amount, e.g. raise 20."))
-      | "raise" :: _ | "r" :: _ ->
-          Some (Error "Raise needs a positive amount, e.g. raise 20.")
-      | _ -> None
+          | _ -> Some (Error "Raise needs a positive amount, e.g. /raise 20."))
+      | "/raise" :: _ | "/r" :: _ ->
+          Some (Error "Raise needs a positive amount, e.g. /raise 20.")
+      | _ -> Some (Error "Unknown command. Type chat without /, or use /name, /fold, /call, /check, /raise, /quit.")
     in
     match action_result with
     | None -> Ok (Some (Poker.Protocol.Send_chat trimmed))
@@ -301,7 +349,84 @@ let command_to_message state line =
           Ok (Some (Poker.Protocol.Player_action action))
         else Error "That poker action is not available right now."
 
-let rec read_commands state output =
+let with_raw_terminal f =
+  let fd = Unix.stdin in
+  if not (Unix.isatty fd) then f ()
+  else
+    let original = Unix.tcgetattr fd in
+    let raw = { original with c_icanon = false; c_echo = false; c_vmin = 1; c_vtime = 0 } in
+    Unix.tcsetattr fd Unix.TCSANOW raw;
+    Lwt.finalize f (fun () ->
+        Unix.tcsetattr fd Unix.TCSANOW original;
+        Lwt.return_unit)
+
+let append_input state char =
+  state.input_buffer <- state.input_buffer ^ String.make 1 char;
+  state.action_index <- None
+
+let backspace_input state =
+  let length = String.length state.input_buffer in
+  if length > 0 then state.input_buffer <- String.sub state.input_buffer 0 (length - 1);
+  state.action_index <- None
+
+let submit_input state output =
+  let line = state.input_buffer in
+  match command_to_message state line with
+  | Error message ->
+      add_event state Problem message;
+      state.action_index <- None;
+      redraw state
+  | Ok None ->
+      reset_input state;
+      redraw state
+  | Ok (Some Poker.Protocol.Disconnect) ->
+      reset_input state;
+      Poker.Wire.send_client_message output Poker.Protocol.Disconnect
+  | Ok (Some message) ->
+      reset_input state;
+      let%lwt () = Poker.Wire.send_client_message output message in
+      redraw state
+
+let rec read_escape_sequence state =
+  let%lwt second = Lwt_io.read_char_opt Lwt_io.stdin in
+  match second with
+  | Some '[' -> (
+      let%lwt third = Lwt_io.read_char_opt Lwt_io.stdin in
+      match third with
+      | Some 'D' ->
+          cycle_action state (-1);
+          redraw state
+      | Some 'C' ->
+          cycle_action state 1;
+          redraw state
+      | _ -> redraw state)
+  | _ -> redraw state
+
+let rec read_raw_commands state output =
+  let%lwt char = Lwt_io.read_char_opt Lwt_io.stdin in
+  match char with
+  | None -> Poker.Wire.send_client_message output Poker.Protocol.Disconnect
+  | Some '\004' -> Poker.Wire.send_client_message output Poker.Protocol.Disconnect
+  | Some '\n' | Some '\r' ->
+      let%lwt () = submit_input state output in
+      read_raw_commands state output
+  | Some '\t' ->
+      cycle_action state 1;
+      let%lwt () = redraw state in
+      read_raw_commands state output
+  | Some '\027' ->
+      let%lwt () = read_escape_sequence state in
+      read_raw_commands state output
+  | Some '\b' | Some '\127' ->
+      backspace_input state;
+      let%lwt () = redraw state in
+      read_raw_commands state output
+  | Some char ->
+      append_input state char;
+      let%lwt () = redraw state in
+      read_raw_commands state output
+
+let rec read_line_commands state output =
   let%lwt () =
     if not state.redraw then Lwt_io.printf "%s%!" (prompt_label state)
     else Lwt.return_unit
@@ -314,13 +439,17 @@ let rec read_commands state output =
       | Error message ->
           add_event state Problem message;
           let%lwt () = redraw state in
-          read_commands state output
-      | Ok None -> read_commands state output
+          read_line_commands state output
+      | Ok None -> read_line_commands state output
       | Ok (Some Poker.Protocol.Disconnect) ->
           Poker.Wire.send_client_message output Poker.Protocol.Disconnect
       | Ok (Some message) ->
           let%lwt () = Poker.Wire.send_client_message output message in
-          read_commands state output)
+          read_line_commands state output)
+
+let read_commands state output =
+  if state.redraw then with_raw_terminal (fun () -> read_raw_commands state output)
+  else read_line_commands state output
 
 let run_client host port =
   let state = create_ui_state host port in
@@ -343,7 +472,7 @@ let run_client host port =
     Poker.Wire.send_client_message output (Poker.Protocol.Join join_name)
   in
   add_event state Info
-    "Use chat, /name <new name>, fold/f, call/c, check/x, raise/r <amount>, or quit.";
+    "Use chat without a prefix. Commands: /name <new name>, /fold, /call, /check, /raise <amount>, /quit.";
   let%lwt () = redraw state in
   let listener =
     Lwt.catch
