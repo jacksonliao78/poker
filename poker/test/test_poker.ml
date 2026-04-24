@@ -149,6 +149,81 @@ let test_legal_actions_follow_turn_and_bet _ =
   assert_equal
     [ Poker.Protocol.Can_fold; Can_call 10; Can_raise 10 ]
     (Poker.Protocol.legal_actions_for_player game ~player_id:current.id)
+let make_four_player_game () =
+  let lobby = Poker.Lobby.empty () in
+  let lobby, _ = Poker.Lobby.add_player lobby in
+  let lobby, _ = Poker.Lobby.add_player lobby in
+  let lobby, _ = Poker.Lobby.add_player lobby in
+  let lobby, _ = Poker.Lobby.add_player lobby in
+  Poker.Game.start (Poker.Lobby.players lobby)
+
+let apply_ok game player_index action =
+  match
+    Poker.Game.apply_action game
+      ~player_id:(List.nth game.Poker.Types.players player_index).id action
+  with
+  | Error message -> assert_failure message
+  | Ok outcome -> outcome
+
+let test_preflop_to_flop _ =
+  let game = make_four_player_game () in
+  let game =
+    match apply_ok game 3 Poker.Types.Call with
+    | Poker.Game.Next_turn game -> game
+    | _ -> assert_failure "expected next_turn after UTG preflop call"
+  in
+  let game =
+    match apply_ok game 0 Poker.Types.Call with
+    | Poker.Game.Next_turn game -> game
+    | _ -> assert_failure "expected next_turn after dealer preflop call"
+  in
+  match apply_ok game 1 Poker.Types.Call with
+  | Poker.Game.Next_turn game ->
+      assert_equal Poker.Types.Flop game.table.street;
+      assert_equal 3 (List.length game.table.community_cards);
+      assert_bool "hole cards stay private in player state"
+        (List.for_all (fun player -> List.length player.Poker.Types.hole_cards = 2) game.players)
+  | _ -> assert_failure "expected transition to flop after preflop closes"
+
+let test_checkdown_to_river _ =
+  let game = make_four_player_game () in
+  let game =
+    match apply_ok game 3 Poker.Types.Call with Poker.Game.Next_turn g -> g | _ -> assert_failure "expected next_turn"
+  in
+  let game =
+    match apply_ok game 0 Poker.Types.Call with Poker.Game.Next_turn g -> g | _ -> assert_failure "expected next_turn"
+  in
+  let game =
+    match apply_ok game 1 Poker.Types.Call with Poker.Game.Next_turn g -> g | _ -> assert_failure "expected flop"
+  in
+  let game =
+    match apply_ok game 1 Poker.Types.Check with Poker.Game.Next_turn g -> g | _ -> assert_failure "expected flop next_turn"
+  in
+  let game =
+    match apply_ok game 2 Poker.Types.Check with Poker.Game.Next_turn g -> g | _ -> assert_failure "expected flop next_turn"
+  in
+  let game =
+    match apply_ok game 3 Poker.Types.Check with Poker.Game.Next_turn g -> g | _ -> assert_failure "expected flop next_turn"
+  in
+  let game =
+    match apply_ok game 0 Poker.Types.Check with Poker.Game.Next_turn g -> g | _ -> assert_failure "expected turn transition"
+  in
+  assert_equal Poker.Types.Turn game.table.street;
+  assert_equal 4 (List.length game.table.community_cards);
+  let game =
+    match apply_ok game 1 Poker.Types.Check with Poker.Game.Next_turn g -> g | _ -> assert_failure "expected turn next_turn"
+  in
+  let game =
+    match apply_ok game 2 Poker.Types.Check with Poker.Game.Next_turn g -> g | _ -> assert_failure "expected turn next_turn"
+  in
+  let game =
+    match apply_ok game 3 Poker.Types.Check with Poker.Game.Next_turn g -> g | _ -> assert_failure "expected turn next_turn"
+  in
+  match apply_ok game 0 Poker.Types.Check with
+  | Poker.Game.Next_turn game ->
+      assert_equal Poker.Types.River game.table.street;
+      assert_equal 5 (List.length game.table.community_cards)
+  | _ -> assert_failure "expected river transition"
 
 let tests =
   "poker"
@@ -170,6 +245,8 @@ let tests =
          >:: test_player_view_keeps_hole_cards_private;
          "legal_actions_follow_turn_and_bet"
          >:: test_legal_actions_follow_turn_and_bet;
+         "preflop_to_flop" >:: test_preflop_to_flop;
+         "checkdown_to_river" >:: test_checkdown_to_river;
        ]
 
 let () = run_test_tt_main tests
