@@ -225,6 +225,318 @@ let test_checkdown_to_river _ =
       assert_equal 5 (List.length game.table.community_cards)
   | _ -> assert_failure "expected river transition"
 
+let test_full_deck_has_52_unique_cards _ =
+  let deck = Poker.Cards.full_deck in
+  assert_equal 52 (List.length deck);
+  let unique =
+    List.sort_uniq
+      (fun a b ->
+        Stdlib.compare
+          (Poker.Cards.card_to_string a)
+          (Poker.Cards.card_to_string b))
+      deck
+  in
+  assert_equal 52 (List.length unique);
+  List.iter
+    (fun suit ->
+      let count =
+        List.length
+          (List.filter (fun c -> c.Poker.Types.suit = suit) deck)
+      in
+      assert_equal ~msg:"13 cards per suit" 13 count)
+    Poker.Cards.all_suits
+
+let test_deal_n_splits_deck _ =
+  let drawn, remaining = Poker.Cards.deal_n 5 Poker.Cards.full_deck in
+  assert_equal 5 (List.length drawn);
+  assert_equal 47 (List.length remaining);
+  assert_equal Poker.Cards.full_deck (drawn @ remaining)
+
+let test_card_rendering_short_and_long _ =
+  let ace_hearts = { Poker.Types.rank = Ace; suit = Hearts } in
+  let ten_clubs = { Poker.Types.rank = Ten; suit = Clubs } in
+  assert_equal "Ah" (Poker.Cards.card_to_string ace_hearts);
+  assert_equal "Tc" (Poker.Cards.card_to_string ten_clubs);
+  assert_equal "Ace of Hearts" (Poker.Cards.card_to_long_string ace_hearts);
+  assert_equal "10 of Clubs" (Poker.Cards.card_to_long_string ten_clubs)
+
+let test_lobby_rename_player _ =
+  let lobby, player = Poker.Lobby.add_player (Poker.Lobby.empty ()) in
+  let lobby = Poker.Lobby.rename_player lobby ~player_id:player.id "Alice" in
+  assert_equal (Some "Alice")
+    (Poker.Lobby.player_name lobby ~player_id:player.id);
+  assert_equal None (Poker.Lobby.player_name lobby ~player_id:999)
+
+let test_lobby_remove_player _ =
+  let lobby, first = Poker.Lobby.add_player (Poker.Lobby.empty ()) in
+  let lobby, second = Poker.Lobby.add_player lobby in
+  let lobby = Poker.Lobby.remove_player lobby ~player_id:first.id in
+  let snapshot = Poker.Lobby.snapshot lobby in
+  assert_equal 1 (List.length snapshot.Poker.Protocol.players);
+  assert_equal second.id (List.hd snapshot.players).id
+
+let test_raise_updates_bet_and_min_raise _ =
+  let game = make_four_player_game () in
+  match apply_ok game 3 (Poker.Types.Raise 20) with
+  | Poker.Game.Next_turn next_game ->
+      let raiser = List.nth next_game.players 3 in
+      assert_equal 470 raiser.chips;
+      assert_equal 30 raiser.round_bet;
+      assert_equal 45 next_game.table.pot;
+      assert_equal 30 next_game.table.current_bet;
+      assert_equal 20 next_game.table.min_raise;
+      assert_equal 0 next_game.table.turn_index
+  | _ -> assert_failure "expected next turn after raise"
+
+let test_raise_below_min_is_rejected _ =
+  let game = make_four_player_game () in
+  match
+    Poker.Game.apply_action game
+      ~player_id:(List.nth game.Poker.Types.players 3).id
+      (Poker.Types.Raise 5)
+  with
+  | Error message ->
+      assert_equal "Raise is smaller than the minimum raise." message
+  | Ok _ -> assert_failure "expected raise below min to fail"
+
+let test_fold_out_ends_hand _ =
+  let game = make_four_player_game () in
+  let game =
+    match apply_ok game 3 Poker.Types.Fold with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected next_turn after UTG fold"
+  in
+  let game =
+    match apply_ok game 0 Poker.Types.Fold with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected next_turn after dealer fold"
+  in
+  match apply_ok game 1 Poker.Types.Fold with
+  | Poker.Game.Hand_complete (_, winner) ->
+      let big_blind = List.nth game.Poker.Types.players 2 in
+      assert_equal big_blind.id winner.id
+  | _ -> assert_failure "expected hand_complete when only one active player remains"
+
+let test_start_next_hand_resets_state _ =
+  let game = make_four_player_game () in
+  let next_hand = Poker.Game.start_next_hand game in
+  assert_equal 4 (List.length next_hand.Poker.Types.players);
+  assert_equal 44 (List.length next_hand.deck);
+  assert_equal Poker.Types.Preflop next_hand.table.street;
+  assert_equal [] next_hand.table.community_cards;
+  assert_bool "each player gets two fresh hole cards"
+    (List.for_all
+       (fun p -> List.length p.Poker.Types.hole_cards = 2)
+       next_hand.players)
+
+let test_draw_community_cards_moves_from_deck _ =
+  let game = make_four_player_game () in
+  let original_deck_size = List.length game.Poker.Types.deck in
+  let drawn_game = Poker.Game.draw_community_cards game ~count:3 in
+  assert_equal 3 (List.length drawn_game.table.community_cards);
+  assert_equal (original_deck_size - 3) (List.length drawn_game.deck)
+
+let test_resolve_showdown_picks_highest_rank _ =
+  let base_game = make_four_player_game () in
+  let players =
+    List.mapi
+      (fun i p ->
+        match i with
+        | 0 ->
+            {
+              p with
+              Poker.Types.hole_cards =
+                [
+                  { Poker.Types.rank = Ace; suit = Spades };
+                  { rank = Two; suit = Hearts };
+                ];
+            }
+        | 1 ->
+            {
+              p with
+              Poker.Types.hole_cards =
+                [
+                  { Poker.Types.rank = King; suit = Spades };
+                  { rank = Three; suit = Hearts };
+                ];
+            }
+        | _ -> { p with status = Poker.Types.Folded })
+      base_game.Poker.Types.players
+  in
+  let table =
+    {
+      base_game.table with
+      community_cards =
+        [
+          { Poker.Types.rank = Four; suit = Clubs };
+          { rank = Five; suit = Diamonds };
+          { rank = Six; suit = Hearts };
+          { rank = Seven; suit = Spades };
+          { rank = Eight; suit = Clubs };
+        ];
+    }
+  in
+  let game = { base_game with players; table } in
+  let winners = Poker.Game.resolve_showdown game in
+  assert_equal 1 (List.length winners);
+  assert_equal (List.nth players 0).id (List.hd winners).id
+
+let test_player_view_exposes_seat_roles _ =
+  let game = make_four_player_game () in
+  let viewer = List.nth game.Poker.Types.players 0 in
+  match Poker.Protocol.player_view_of_game game ~player_id:viewer.id with
+  | None -> assert_failure "expected player view"
+  | Some view ->
+      let by_index i = List.nth view.Poker.Protocol.players i in
+      assert_bool "dealer flag on seat 0" (by_index 0).is_dealer;
+      assert_bool "small blind flag on seat 1" (by_index 1).is_small_blind;
+      assert_bool "big blind flag on seat 2" (by_index 2).is_big_blind;
+      assert_bool "turn flag on seat 3" (by_index 3).is_turn;
+      assert_equal Poker.Types.Preflop view.table.street;
+      assert_equal 15 view.table.pot
+
+let test_bet_action_is_rejected _ =
+  let game = make_four_player_game () in
+  match
+    Poker.Game.apply_action game
+      ~player_id:(List.nth game.Poker.Types.players 3).id
+      (Poker.Types.Bet 20)
+  with
+  | Error message -> assert_equal "Bet is not supported yet." message
+  | Ok _ -> assert_failure "expected Bet to be rejected"
+
+let test_terminal_street_and_status _ =
+  assert_equal "Preflop" (Poker.Terminal_ui.render_street Poker.Types.Preflop);
+  assert_equal "Flop" (Poker.Terminal_ui.render_street Poker.Types.Flop);
+  assert_equal "Turn" (Poker.Terminal_ui.render_street Poker.Types.Turn);
+  assert_equal "River" (Poker.Terminal_ui.render_street Poker.Types.River);
+  assert_equal "active" (Poker.Terminal_ui.render_status Poker.Types.Active);
+  assert_equal "folded" (Poker.Terminal_ui.render_status Poker.Types.Folded);
+  assert_equal "all-in" (Poker.Terminal_ui.render_status Poker.Types.AllIn)
+
+let contains_substring haystack needle =
+  let hlen = String.length haystack in
+  let nlen = String.length needle in
+  let rec loop i =
+    if i + nlen > hlen then false
+    else if String.sub haystack i nlen = needle then true
+    else loop (i + 1)
+  in
+  nlen = 0 || loop 0
+
+let test_terminal_legal_action_rendering _ =
+  let plain = Poker.Terminal_ui.plain in
+  assert_equal "/fold"
+    (Poker.Terminal_ui.render_legal_action plain Poker.Protocol.Can_fold);
+  assert_equal "/check"
+    (Poker.Terminal_ui.render_legal_action plain Poker.Protocol.Can_check);
+  let call_text =
+    Poker.Terminal_ui.render_legal_action plain (Poker.Protocol.Can_call 10)
+  in
+  assert_bool "call text mentions /call" (contains_substring call_text "/call");
+  let raise_text =
+    Poker.Terminal_ui.render_legal_action plain (Poker.Protocol.Can_raise 20)
+  in
+  assert_bool "raise text mentions /raise"
+    (contains_substring raise_text "/raise");
+  assert_bool "raise text mentions min" (contains_substring raise_text "min")
+
+let test_deal_n_beyond_deck_returns_all _ =
+  let short_deck = [
+    { Poker.Types.rank = Ace; suit = Spades };
+    { rank = King; suit = Hearts };
+  ] in
+  let drawn, remaining = Poker.Cards.deal_n 5 short_deck in
+  assert_equal 2 (List.length drawn);
+  assert_equal [] remaining;
+  let empty_drawn, empty_remaining = Poker.Cards.deal_n 0 short_deck in
+  assert_equal [] empty_drawn;
+  assert_equal short_deck empty_remaining
+
+let test_lobby_snapshot_tracks_open_seats _ =
+  let lobby = Poker.Lobby.empty () in
+  assert_equal Poker.Protocol.seats_total
+    (Poker.Lobby.snapshot lobby).seats_open;
+  let lobby =
+    List.fold_left
+      (fun acc _ ->
+        let acc, _ = Poker.Lobby.add_player acc in
+        acc)
+      lobby
+      (List.init Poker.Protocol.seats_total (fun _ -> ()))
+  in
+  let snapshot = Poker.Lobby.snapshot lobby in
+  assert_equal 0 snapshot.seats_open;
+  assert_equal Poker.Protocol.seats_total (List.length snapshot.players)
+
+let test_game_start_preserves_blind_constants _ =
+  let game = make_four_player_game () in
+  assert_equal Poker.Types.default_config.small_blind game.Poker.Types.small_blind;
+  assert_equal Poker.Types.default_config.big_blind game.big_blind;
+  assert_equal game.big_blind game.table.min_raise;
+  assert_equal Poker.Types.Preflop game.table.street;
+  assert_equal [] game.table.community_cards
+
+let test_check_succeeds_when_no_bet _ =
+  let game = make_four_player_game () in
+  let game =
+    match apply_ok game 3 Poker.Types.Call with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected next_turn after UTG call"
+  in
+  let game =
+    match apply_ok game 0 Poker.Types.Call with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected next_turn after dealer call"
+  in
+  let game =
+    match apply_ok game 1 Poker.Types.Call with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected transition to flop"
+  in
+  assert_equal Poker.Types.Flop game.table.street;
+  assert_equal 0 game.table.current_bet;
+  match apply_ok game 1 Poker.Types.Check with
+  | Poker.Game.Next_turn next_game ->
+      assert_equal 0 (List.nth next_game.players 1).round_bet;
+      assert_equal 2 next_game.table.turn_index
+  | _ -> assert_failure "expected next_turn after check on flop"
+
+let test_reset_bets_clears_round_bets _ =
+  let game = make_four_player_game () in
+  let reset = Poker.Game.reset_bets game in
+  assert_bool "all round_bets cleared"
+    (List.for_all
+       (fun p -> p.Poker.Types.round_bet = 0)
+       reset.Poker.Types.players);
+  assert_equal 0 reset.table.current_bet;
+  assert_equal game.big_blind reset.table.min_raise
+
+let test_protocol_returns_none_and_empty_for_unknown _ =
+  let game = make_four_player_game () in
+  assert_equal None
+    (Poker.Protocol.player_view_of_game game ~player_id:999);
+  assert_equal []
+    (Poker.Protocol.legal_actions_for_player game ~player_id:999);
+  let off_turn = List.nth game.Poker.Types.players 0 in
+  assert_equal []
+    (Poker.Protocol.legal_actions_for_player game ~player_id:off_turn.id)
+
+let test_terminal_render_cards_variants _ =
+  let plain = Poker.Terminal_ui.plain in
+  assert_equal "(none)" (Poker.Terminal_ui.render_cards plain []);
+  let cards = [
+    { Poker.Types.rank = Ace; suit = Spades };
+    { rank = Ten; suit = Hearts };
+  ] in
+  let rendered = Poker.Terminal_ui.render_cards plain cards in
+  assert_bool "contains first card name"
+    (contains_substring rendered "Ace of Spades");
+  assert_bool "contains second card name"
+    (contains_substring rendered "10 of Hearts");
+  assert_bool "uses two-space separator"
+    (contains_substring rendered "  ")
+
 let tests =
   "poker"
   >::: [
@@ -247,6 +559,35 @@ let tests =
          >:: test_legal_actions_follow_turn_and_bet;
          "preflop_to_flop" >:: test_preflop_to_flop;
          "checkdown_to_river" >:: test_checkdown_to_river;
+         "full_deck_has_52_unique_cards" >:: test_full_deck_has_52_unique_cards;
+         "deal_n_splits_deck" >:: test_deal_n_splits_deck;
+         "card_rendering_short_and_long" >:: test_card_rendering_short_and_long;
+         "lobby_rename_player" >:: test_lobby_rename_player;
+         "lobby_remove_player" >:: test_lobby_remove_player;
+         "raise_updates_bet_and_min_raise" >:: test_raise_updates_bet_and_min_raise;
+         "raise_below_min_is_rejected" >:: test_raise_below_min_is_rejected;
+         "fold_out_ends_hand" >:: test_fold_out_ends_hand;
+         "start_next_hand_resets_state" >:: test_start_next_hand_resets_state;
+         "draw_community_cards_moves_from_deck"
+         >:: test_draw_community_cards_moves_from_deck;
+         "resolve_showdown_picks_highest_rank"
+         >:: test_resolve_showdown_picks_highest_rank;
+         "player_view_exposes_seat_roles" >:: test_player_view_exposes_seat_roles;
+         "bet_action_is_rejected" >:: test_bet_action_is_rejected;
+         "terminal_street_and_status" >:: test_terminal_street_and_status;
+         "terminal_legal_action_rendering"
+         >:: test_terminal_legal_action_rendering;
+         "deal_n_beyond_deck_returns_all"
+         >:: test_deal_n_beyond_deck_returns_all;
+         "lobby_snapshot_tracks_open_seats"
+         >:: test_lobby_snapshot_tracks_open_seats;
+         "game_start_preserves_blind_constants"
+         >:: test_game_start_preserves_blind_constants;
+         "check_succeeds_when_no_bet" >:: test_check_succeeds_when_no_bet;
+         "reset_bets_clears_round_bets" >:: test_reset_bets_clears_round_bets;
+         "protocol_returns_none_and_empty_for_unknown"
+         >:: test_protocol_returns_none_and_empty_for_unknown;
+         "terminal_render_cards_variants" >:: test_terminal_render_cards_variants;
        ]
 
 let () = run_test_tt_main tests
