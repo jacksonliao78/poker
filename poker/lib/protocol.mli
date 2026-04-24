@@ -19,6 +19,44 @@ type lobby_snapshot = {
   seats_open : int;
 }
 
+(** Commands the current game state allows this client to submit. *)
+type legal_action =
+  | Can_fold
+  | Can_check
+  | Can_call of int
+  | Can_raise of int
+
+(** Public per-seat state; private cards are intentionally excluded. *)
+type public_player = {
+  id : int;
+  name : string;
+  chips : int;
+  round_bet : int;
+  status : Types.player_status;
+  is_dealer : bool;
+  is_small_blind : bool;
+  is_big_blind : bool;
+  is_turn : bool;
+}
+
+(** Public table details needed for a complete terminal redraw. *)
+type table_view = {
+  community_cards : Types.card list;
+  pot : int;
+  current_bet : int;
+  min_raise : int;
+  street : Types.street;
+}
+
+(** Personalized view sent to one client; only [your_hole_cards] is private. *)
+type player_view = {
+  your_id : int;
+  your_hole_cards : Types.card list;
+  table : table_view;
+  players : public_player list;
+  legal_actions : legal_action list;
+}
+
 (** Messages the server may send to connected clients. *)
 type server_message =
   | Welcome of {
@@ -31,6 +69,7 @@ type server_message =
       from_name : string;
       text : string;
     }
+  | Game_update of player_view
   | Error of string
   | Info of string
 
@@ -39,3 +78,9 @@ val seats_total : int
 
 (** Long names are capped to keep the text UI readable. *)
 val max_name_length : int
+
+(** Derives turn-sensitive legal actions from the authoritative game state. *)
+val legal_actions_for_player : Types.game_state -> player_id:int -> legal_action list
+
+(** Builds the personalized table view without leaking another player's cards. *)
+val player_view_of_game : Types.game_state -> player_id:int -> player_view option
