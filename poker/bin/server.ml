@@ -91,6 +91,20 @@ let hole_cards_message cards =
   |> String.concat " and "
   |> Printf.sprintf "Your hole cards: %s"
 
+let community_cards_message cards =
+  cards
+  |> List.map Poker.Cards.card_to_long_string
+  |> String.concat ", "
+  |> Printf.sprintf "Board: %s"
+
+let reveal_message_for_street (game : Poker.Types.game_state) =
+  let cards = game.table.community_cards in
+  match (game.table.street, List.length cards) with
+  | Flop, 3 -> Some (Printf.sprintf "Flop revealed. %s" (community_cards_message cards))
+  | Turn, 4 -> Some (Printf.sprintf "Turn revealed. %s" (community_cards_message cards))
+  | River, 5 -> Some (Printf.sprintf "River revealed. %s" (community_cards_message cards))
+  | _ -> None
+
 let player_name_at players index =
   (List.nth players index).Poker.Types.name
 
@@ -153,6 +167,20 @@ let send_balance_update state player_id players =
               player.round_bet))
   | _ -> Lwt.return_unit
 
+let send_private_hole_cards_for_game state (game : Poker.Types.game_state) =
+  Lwt_list.iter_p
+    (fun client ->
+      match
+        List.find_opt
+          (fun player -> player.Poker.Types.id = client.id)
+          game.players
+      with
+      | None -> Lwt.return_unit
+      | Some player ->
+          safe_send client.output
+            (Poker.Protocol.Info (hole_cards_message player.hole_cards)))
+    state.clients
+
 let handle_player_action state player_id action =
   match state.game with
   | None -> (
@@ -189,8 +217,16 @@ let handle_player_action state player_id action =
                 send_balance_update next_state player_id next_game.players
               in
               let%lwt () =
+                match reveal_message_for_street next_game with
+                | None -> Lwt.return_unit
+                | Some message -> broadcast next_state (Poker.Protocol.Info message)
+              in
+              let%lwt () =
                 broadcast next_state
                   (Poker.Protocol.Info (current_turn_message next_game))
+              in
+              let%lwt () =
+                send_private_hole_cards_for_game next_state next_game
               in
               let%lwt () = prompt_current_player next_game next_state.clients in
               Lwt.return next_state
@@ -203,6 +239,9 @@ let handle_player_action state player_id action =
                 broadcast next_state
                   (Poker.Protocol.Info
                      "Betting round complete. Street progression is not implemented yet.")
+              in
+              let%lwt () =
+                send_private_hole_cards_for_game next_state next_game
               in
               Lwt.return next_state
           | Poker.Game.Hand_complete (next_game, winner) ->
@@ -220,6 +259,9 @@ let handle_player_action state player_id action =
                      (Printf.sprintf
                         "Hand complete. %s wins the pot. Automatic next hand is not implemented yet."
                         winner))
+              in
+              let%lwt () =
+                send_private_hole_cards_for_game next_state next_game
               in
               Lwt.return next_state))
 
