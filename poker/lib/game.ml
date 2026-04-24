@@ -74,8 +74,38 @@ let rec advance_street game =
 
 (* Determines winners after the river *)
 and resolve_showdown game =
-  let _ = game in
-  failwith "TODO"
+  let rank_value = function
+    | Two -> 2
+    | Three -> 3
+    | Four -> 4
+    | Five -> 5
+    | Six -> 6
+    | Seven -> 7
+    | Eight -> 8
+    | Nine -> 9
+    | Ten -> 10
+    | Jack -> 11
+    | Queen -> 12
+    | King -> 13
+    | Ace -> 14
+  in
+  let contenders =
+    List.filter (fun player -> player.status <> Folded) game.players
+  in
+  let best_rank player =
+    let all_cards = List.concat [ player.hole_cards; game.table.community_cards ] in
+    List.fold_left
+      (fun best card -> max best (rank_value card.rank))
+      0 all_cards
+  in
+  match contenders with
+  | [] -> []
+  | first :: rest ->
+      let best =
+        List.fold_left (fun current player -> max current (best_rank player))
+          (best_rank first) rest
+      in
+      List.filter (fun player -> best_rank player = best) contenders
 
 let deal_hole_cards players deck =
   let player_count = List.length players in
@@ -118,6 +148,17 @@ let next_active_index players start_index =
   in
   search 0 start_index
 
+let round_start_index game =
+  let player_count = List.length game.players in
+  let nominal_start =
+    match game.table.street with
+    | Preflop -> (game.table.dealer_index + 3) mod player_count
+    | Flop | Turn | River -> (game.table.dealer_index + 1) mod player_count
+  in
+  match next_active_index game.players nominal_start with
+  | Some index -> index
+  | None -> nominal_start
+
 let active_players players =
   List.filter (fun player -> player.status <> Folded) players
 
@@ -158,15 +199,27 @@ let apply_to_player game player_id f =
 
 let advance_after_action game =
   let remaining_players = active_players game.players in
+  let player_count = List.length game.players in
+  let next_index =
+    next_active_index game.players
+      ((game.table.turn_index + 1) mod player_count)
+  in
+  let zero_bet_round_closed =
+    if game.table.current_bet <> 0 then false
+    else
+      let start_index = round_start_index game in
+      match next_index with
+      | Some index -> index = start_index
+      | None -> true
+  in
   if List.length remaining_players = 1 then
     Hand_complete (game, List.hd remaining_players)
-  else if betting_round_complete game.players game.table.current_bet then
+  else if
+    betting_round_complete game.players game.table.current_bet
+    && (game.table.current_bet <> 0 || zero_bet_round_closed)
+  then
     advance_street game
   else
-    let next_index =
-      next_active_index game.players
-        ((game.table.turn_index + 1) mod List.length game.players)
-    in
     match next_index with
     | None -> Betting_round_complete game
     | Some turn_index ->
