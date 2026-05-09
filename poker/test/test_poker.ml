@@ -149,6 +149,7 @@ let test_legal_actions_follow_turn_and_bet _ =
   assert_equal
     [ Poker.Protocol.Can_fold; Can_call 10; Can_raise 10 ]
     (Poker.Protocol.legal_actions_for_player game ~player_id:current.id)
+
 let make_four_player_game () =
   let lobby = Poker.Lobby.empty () in
   let lobby, _ = Poker.Lobby.add_player lobby in
@@ -177,47 +178,107 @@ let test_preflop_to_flop _ =
     | Poker.Game.Next_turn game -> game
     | _ -> assert_failure "expected next_turn after dealer preflop call"
   in
-  match apply_ok game 1 Poker.Types.Call with
+  let game =
+    match apply_ok game 1 Poker.Types.Call with
+    | Poker.Game.Next_turn game ->
+        assert_equal Poker.Types.Preflop game.table.street;
+        assert_equal 2 game.table.turn_index;
+        game
+    | _ -> assert_failure "expected big blind option after small blind call"
+  in
+  match apply_ok game 2 Poker.Types.Check with
   | Poker.Game.Next_turn game ->
       assert_equal Poker.Types.Flop game.table.street;
       assert_equal 3 (List.length game.table.community_cards);
       assert_bool "hole cards stay private in player state"
-        (List.for_all (fun player -> List.length player.Poker.Types.hole_cards = 2) game.players)
-  | _ -> assert_failure "expected transition to flop after preflop closes"
+        (List.for_all
+           (fun player -> List.length player.Poker.Types.hole_cards = 2)
+           game.players)
+  | _ -> assert_failure "expected transition to flop after big blind option"
+
+let test_preflop_big_blind_can_raise_option _ =
+  let game = make_four_player_game () in
+  let game =
+    match apply_ok game 3 Poker.Types.Call with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected next_turn"
+  in
+  let game =
+    match apply_ok game 0 Poker.Types.Call with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected next_turn"
+  in
+  let game =
+    match apply_ok game 1 Poker.Types.Call with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected big blind option"
+  in
+  match apply_ok game 2 (Poker.Types.Raise 10) with
+  | Poker.Game.Next_turn game ->
+      assert_equal Poker.Types.Preflop game.table.street;
+      assert_equal 20 game.table.current_bet;
+      assert_equal 50 game.table.pot;
+      assert_equal 3 game.table.turn_index
+  | _ -> assert_failure "expected preflop to continue after big blind raises"
 
 let test_checkdown_to_river _ =
   let game = make_four_player_game () in
   let game =
-    match apply_ok game 3 Poker.Types.Call with Poker.Game.Next_turn g -> g | _ -> assert_failure "expected next_turn"
+    match apply_ok game 3 Poker.Types.Call with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected next_turn"
   in
   let game =
-    match apply_ok game 0 Poker.Types.Call with Poker.Game.Next_turn g -> g | _ -> assert_failure "expected next_turn"
+    match apply_ok game 0 Poker.Types.Call with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected next_turn"
   in
   let game =
-    match apply_ok game 1 Poker.Types.Call with Poker.Game.Next_turn g -> g | _ -> assert_failure "expected flop"
+    match apply_ok game 1 Poker.Types.Call with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected big blind option"
   in
   let game =
-    match apply_ok game 1 Poker.Types.Check with Poker.Game.Next_turn g -> g | _ -> assert_failure "expected flop next_turn"
+    match apply_ok game 2 Poker.Types.Check with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected flop transition"
   in
   let game =
-    match apply_ok game 2 Poker.Types.Check with Poker.Game.Next_turn g -> g | _ -> assert_failure "expected flop next_turn"
+    match apply_ok game 1 Poker.Types.Check with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected flop next_turn"
   in
   let game =
-    match apply_ok game 3 Poker.Types.Check with Poker.Game.Next_turn g -> g | _ -> assert_failure "expected flop next_turn"
+    match apply_ok game 2 Poker.Types.Check with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected flop next_turn"
   in
   let game =
-    match apply_ok game 0 Poker.Types.Check with Poker.Game.Next_turn g -> g | _ -> assert_failure "expected turn transition"
+    match apply_ok game 3 Poker.Types.Check with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected flop next_turn"
+  in
+  let game =
+    match apply_ok game 0 Poker.Types.Check with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected turn transition"
   in
   assert_equal Poker.Types.Turn game.table.street;
   assert_equal 4 (List.length game.table.community_cards);
   let game =
-    match apply_ok game 1 Poker.Types.Check with Poker.Game.Next_turn g -> g | _ -> assert_failure "expected turn next_turn"
+    match apply_ok game 1 Poker.Types.Check with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected turn next_turn"
   in
   let game =
-    match apply_ok game 2 Poker.Types.Check with Poker.Game.Next_turn g -> g | _ -> assert_failure "expected turn next_turn"
+    match apply_ok game 2 Poker.Types.Check with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected turn next_turn"
   in
   let game =
-    match apply_ok game 3 Poker.Types.Check with Poker.Game.Next_turn g -> g | _ -> assert_failure "expected turn next_turn"
+    match apply_ok game 3 Poker.Types.Check with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected turn next_turn"
   in
   match apply_ok game 0 Poker.Types.Check with
   | Poker.Game.Next_turn game ->
@@ -240,8 +301,7 @@ let test_full_deck_has_52_unique_cards _ =
   List.iter
     (fun suit ->
       let count =
-        List.length
-          (List.filter (fun c -> c.Poker.Types.suit = suit) deck)
+        List.length (List.filter (fun c -> c.Poker.Types.suit = suit) deck)
       in
       assert_equal ~msg:"13 cards per suit" 13 count)
     Poker.Cards.all_suits
@@ -292,8 +352,7 @@ let test_raise_below_min_is_rejected _ =
   let game = make_four_player_game () in
   match
     Poker.Game.apply_action game
-      ~player_id:(List.nth game.Poker.Types.players 3).id
-      (Poker.Types.Raise 5)
+      ~player_id:(List.nth game.Poker.Types.players 3).id (Poker.Types.Raise 5)
   with
   | Error message ->
       assert_equal "Raise is smaller than the minimum raise." message
@@ -315,7 +374,9 @@ let test_fold_out_ends_hand _ =
   | Poker.Game.Hand_complete (_, winner) ->
       let big_blind = List.nth game.Poker.Types.players 2 in
       assert_equal big_blind.id winner.id
-  | _ -> assert_failure "expected hand_complete when only one active player remains"
+  | _ ->
+      assert_failure
+        "expected hand_complete when only one active player remains"
 
 let test_start_next_hand_resets_state _ =
   let game = make_four_player_game () in
@@ -378,8 +439,12 @@ let test_resolve_showdown_picks_highest_rank _ =
   in
   let game = { base_game with players; table } in
   let winners = Poker.Game.resolve_showdown game in
-  assert_equal 1 (List.length winners);
-  assert_equal (List.nth players 0).id (List.hd winners).id
+  assert_equal 2 (List.length winners);
+  let winner_ids = winners |> List.map (fun p -> p.Poker.Types.id) |> List.sort compare in
+  let expected_ids =
+    [ (List.nth players 0).id; (List.nth players 1).id ] |> List.sort compare
+  in
+  assert_equal expected_ids winner_ids
 
 let test_player_view_exposes_seat_roles _ =
   let game = make_four_player_game () in
@@ -399,8 +464,7 @@ let test_bet_action_is_rejected _ =
   let game = make_four_player_game () in
   match
     Poker.Game.apply_action game
-      ~player_id:(List.nth game.Poker.Types.players 3).id
-      (Poker.Types.Bet 20)
+      ~player_id:(List.nth game.Poker.Types.players 3).id (Poker.Types.Bet 20)
   with
   | Error message -> assert_equal "Bet is not supported yet." message
   | Ok _ -> assert_failure "expected Bet to be rejected"
@@ -442,10 +506,11 @@ let test_terminal_legal_action_rendering _ =
   assert_bool "raise text mentions min" (contains_substring raise_text "min")
 
 let test_deal_n_beyond_deck_returns_all _ =
-  let short_deck = [
-    { Poker.Types.rank = Ace; suit = Spades };
-    { rank = King; suit = Hearts };
-  ] in
+  let short_deck =
+    [
+      { Poker.Types.rank = Ace; suit = Spades }; { rank = King; suit = Hearts };
+    ]
+  in
   let drawn, remaining = Poker.Cards.deal_n 5 short_deck in
   assert_equal 2 (List.length drawn);
   assert_equal [] remaining;
@@ -471,7 +536,8 @@ let test_lobby_snapshot_tracks_open_seats _ =
 
 let test_game_start_preserves_blind_constants _ =
   let game = make_four_player_game () in
-  assert_equal Poker.Types.default_config.small_blind game.Poker.Types.small_blind;
+  assert_equal Poker.Types.default_config.small_blind
+    game.Poker.Types.small_blind;
   assert_equal Poker.Types.default_config.big_blind game.big_blind;
   assert_equal game.big_blind game.table.min_raise;
   assert_equal Poker.Types.Preflop game.table.street;
@@ -492,7 +558,14 @@ let test_check_succeeds_when_no_bet _ =
   let game =
     match apply_ok game 1 Poker.Types.Call with
     | Poker.Game.Next_turn g -> g
-    | _ -> assert_failure "expected transition to flop"
+    | _ -> assert_failure "expected big blind option before flop"
+  in
+  assert_equal Poker.Types.Preflop game.table.street;
+  assert_equal 2 game.table.turn_index;
+  let game =
+    match apply_ok game 2 Poker.Types.Check with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected transition to flop after big blind check"
   in
   assert_equal Poker.Types.Flop game.table.street;
   assert_equal 0 game.table.current_bet;
@@ -514,10 +587,8 @@ let test_reset_bets_clears_round_bets _ =
 
 let test_protocol_returns_none_and_empty_for_unknown _ =
   let game = make_four_player_game () in
-  assert_equal None
-    (Poker.Protocol.player_view_of_game game ~player_id:999);
-  assert_equal []
-    (Poker.Protocol.legal_actions_for_player game ~player_id:999);
+  assert_equal None (Poker.Protocol.player_view_of_game game ~player_id:999);
+  assert_equal [] (Poker.Protocol.legal_actions_for_player game ~player_id:999);
   let off_turn = List.nth game.Poker.Types.players 0 in
   assert_equal []
     (Poker.Protocol.legal_actions_for_player game ~player_id:off_turn.id)
@@ -525,17 +596,15 @@ let test_protocol_returns_none_and_empty_for_unknown _ =
 let test_terminal_render_cards_variants _ =
   let plain = Poker.Terminal_ui.plain in
   assert_equal "(none)" (Poker.Terminal_ui.render_cards plain []);
-  let cards = [
-    { Poker.Types.rank = Ace; suit = Spades };
-    { rank = Ten; suit = Hearts };
-  ] in
+  let cards =
+    [ { Poker.Types.rank = Ace; suit = Spades }; { rank = Ten; suit = Hearts } ]
+  in
   let rendered = Poker.Terminal_ui.render_cards plain cards in
   assert_bool "contains first card name"
     (contains_substring rendered "Ace of Spades");
   assert_bool "contains second card name"
     (contains_substring rendered "10 of Hearts");
-  assert_bool "uses two-space separator"
-    (contains_substring rendered "  ")
+  assert_bool "uses two-space separator" (contains_substring rendered "  ")
 
 let test_long_card_rendering_all_ranks_and_suits _ =
   assert_equal
@@ -653,13 +722,16 @@ let tests =
          "legal_actions_follow_turn_and_bet"
          >:: test_legal_actions_follow_turn_and_bet;
          "preflop_to_flop" >:: test_preflop_to_flop;
+         "preflop_big_blind_can_raise_option"
+         >:: test_preflop_big_blind_can_raise_option;
          "checkdown_to_river" >:: test_checkdown_to_river;
          "full_deck_has_52_unique_cards" >:: test_full_deck_has_52_unique_cards;
          "deal_n_splits_deck" >:: test_deal_n_splits_deck;
          "card_rendering_short_and_long" >:: test_card_rendering_short_and_long;
          "lobby_rename_player" >:: test_lobby_rename_player;
          "lobby_remove_player" >:: test_lobby_remove_player;
-         "raise_updates_bet_and_min_raise" >:: test_raise_updates_bet_and_min_raise;
+         "raise_updates_bet_and_min_raise"
+         >:: test_raise_updates_bet_and_min_raise;
          "raise_below_min_is_rejected" >:: test_raise_below_min_is_rejected;
          "fold_out_ends_hand" >:: test_fold_out_ends_hand;
          "start_next_hand_resets_state" >:: test_start_next_hand_resets_state;
@@ -667,7 +739,8 @@ let tests =
          >:: test_draw_community_cards_moves_from_deck;
          "resolve_showdown_picks_highest_rank"
          >:: test_resolve_showdown_picks_highest_rank;
-         "player_view_exposes_seat_roles" >:: test_player_view_exposes_seat_roles;
+         "player_view_exposes_seat_roles"
+         >:: test_player_view_exposes_seat_roles;
          "bet_action_is_rejected" >:: test_bet_action_is_rejected;
          "terminal_street_and_status" >:: test_terminal_street_and_status;
          "terminal_legal_action_rendering"
@@ -682,7 +755,8 @@ let tests =
          "reset_bets_clears_round_bets" >:: test_reset_bets_clears_round_bets;
          "protocol_returns_none_and_empty_for_unknown"
          >:: test_protocol_returns_none_and_empty_for_unknown;
-         "terminal_render_cards_variants" >:: test_terminal_render_cards_variants;
+         "terminal_render_cards_variants"
+         >:: test_terminal_render_cards_variants;
          "long_card_rendering_all_ranks_and_suits"
          >:: test_long_card_rendering_all_ranks_and_suits;
          "terminal_unicode_rendering_all_ranks_and_suits"

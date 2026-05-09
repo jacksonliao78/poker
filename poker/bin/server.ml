@@ -101,22 +101,24 @@ let hole_cards_message cards =
   |> Printf.sprintf "Your hole cards: %s"
 
 let player_name_at players index = (List.nth players index).Poker.Types.name
+
 let community_cards_message cards =
   cards
   |> List.map Poker.Cards.card_to_long_string
-  |> String.concat ", "
-  |> Printf.sprintf "Board: %s"
+  |> String.concat ", " |> Printf.sprintf "Board: %s"
 
 let reveal_message_for_street (game : Poker.Types.game_state) =
   let cards = game.table.community_cards in
   match (game.table.street, List.length cards) with
-  | Flop, 3 -> Some (Printf.sprintf "Flop revealed. %s" (community_cards_message cards))
-  | Turn, 4 -> Some (Printf.sprintf "Turn revealed. %s" (community_cards_message cards))
-  | River, 5 -> Some (Printf.sprintf "River revealed. %s" (community_cards_message cards))
+  | Flop, 3 ->
+      Some (Printf.sprintf "Flop revealed. %s" (community_cards_message cards))
+  | Turn, 4 ->
+      Some (Printf.sprintf "Turn revealed. %s" (community_cards_message cards))
+  | River, 5 ->
+      Some (Printf.sprintf "River revealed. %s" (community_cards_message cards))
   | _ -> None
 
-let player_name_at players index =
-  (List.nth players index).Poker.Types.name
+let player_name_at players index = (List.nth players index).Poker.Types.name
 
 let current_turn_message (game : Poker.Types.game_state) =
   let current_player =
@@ -242,7 +244,8 @@ let handle_player_action state player_id action =
               let%lwt () =
                 match reveal_message_for_street next_game with
                 | None -> Lwt.return_unit
-                | Some message -> broadcast next_state (Poker.Protocol.Info message)
+                | Some message ->
+                    broadcast next_state (Poker.Protocol.Info message)
               in
               let%lwt () =
                 broadcast next_state
