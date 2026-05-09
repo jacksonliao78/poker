@@ -409,6 +409,49 @@ let start players =
     big_blind = Types.default_config.big_blind;
   }
 
+(* Move the current pot into the winner's stack and zero the pot. *)
+let award_pot game ~winner_id =
+  let pot = game.table.pot in
+  let players =
+    List.map
+      (fun player ->
+        if player.id = winner_id then
+          { player with chips = player.chips + pot }
+        else player)
+      game.players
+  in
+  { game with players; table = { game.table with pot = 0 } }
+
+(* Start the next hand using the previous game's surviving players (chips > 0).
+   Rotates the dealer button to the next surviving seat in original seating
+   order. Returns [None] if ≤1 player has chips left. *)
+let next_hand game =
+  let surviving = List.filter (fun p -> p.chips > 0) game.players in
+  match surviving with
+  | [] | [ _ ] -> None
+  | _ ->
+      let to_lobby p =
+        { Lobby.id = p.id; name = p.name; chips = p.chips; connected = true }
+      in
+      let n_old = List.length game.players in
+      let rec next_surviving_after offset =
+        if offset > n_old then List.hd surviving
+        else
+          let next =
+            List.nth game.players ((game.table.dealer_index + offset) mod n_old)
+          in
+          if next.chips > 0 then next
+          else next_surviving_after (offset + 1)
+      in
+      let new_dealer = next_surviving_after 1 in
+      let rec rotate acc = function
+        | [] -> List.rev acc
+        | h :: _ as lst when h.id = new_dealer.id -> lst @ List.rev acc
+        | h :: t -> rotate (h :: acc) t
+      in
+      let rotated = rotate [] surviving in
+      Some (start (List.map to_lobby rotated))
+
 (* Starts next hand. *)
 let start_next_hand game =
   let lobby_players =

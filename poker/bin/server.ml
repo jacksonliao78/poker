@@ -9,6 +9,7 @@ type server_state = {
   lobby : Poker.Lobby.t;
   clients : client list;
   game : Poker.Types.game_state option;
+  cash_out_votes : int list;
 }
 
 type event =
@@ -23,7 +24,13 @@ type event =
   | Client_disconnected of int
 
 (* Empty lobby. *)
-let initial_state = { lobby = Poker.Lobby.empty (); clients = []; game = None }
+let initial_state =
+  {
+    lobby = Poker.Lobby.empty ();
+    clients = [];
+    game = None;
+    cash_out_votes = [];
+  }
 
 let safe_send output message =
   Lwt.catch
@@ -199,6 +206,22 @@ let send_private_hole_cards_for_game state (game : Poker.Types.game_state) =
             (Poker.Protocol.Info (hole_cards_message player.hole_cards)))
     state.clients
 
+let final_standings_messages (game : Poker.Types.game_state) =
+  let standings =
+    game.Poker.Types.players
+    |> List.map (fun p ->
+           Printf.sprintf "%s: $%d" p.Poker.Types.name p.chips)
+  in
+  "Game over. Final standings:" :: standings
+
+let everyone_voted_to_cash_out (game : Poker.Types.game_state) votes =
+  let surviving =
+    List.filter (fun p -> p.Poker.Types.chips > 0) game.players
+  in
+  match surviving with
+  | [] -> false
+  | _ -> List.for_all (fun p -> List.mem p.Poker.Types.id votes) surviving
+
 let handle_player_action state player_id action =
   match state.game with
   | None -> (
@@ -273,28 +296,75 @@ let handle_player_action state player_id action =
               in
               Lwt.return next_state
           | Poker.Game.Hand_complete (next_game, winner) ->
-              let winner =
+              let winner_name =
                 if winner.Poker.Types.status = Poker.Types.Folded then
                   actor_name
                 else winner.name
               in
-              let next_state = { state with game = Some next_game } in
-              let%lwt () =
-                send_balance_update next_state player_id next_game.players
+              let pot_amount = next_game.Poker.Types.table.pot in
+              let settled =
+                Poker.Game.award_pot next_game ~winner_id:winner.id
               in
-              let%lwt () = broadcast_game_update next_state next_game in
+              let intermediate_state = { state with game = Some settled } in
               let%lwt () =
-                broadcast next_state
+                send_balance_update intermediate_state player_id settled.players
+              in
+              let%lwt () = broadcast_game_update intermediate_state settled in
+              let%lwt () =
+                broadcast intermediate_state
                   (Poker.Protocol.Info
-                     (Printf.sprintf
-                        "Hand complete. %s wins the pot. Automatic next hand \
-                         is not implemented yet."
-                        winner))
+                     (Printf.sprintf "Hand complete. %s wins $%d."
+                        winner_name pot_amount))
               in
-              let%lwt () =
-                send_private_hole_cards_for_game next_state next_game
+              let end_now =
+                everyone_voted_to_cash_out settled state.cash_out_votes
               in
-              Lwt.return next_state))
+              if end_now then (
+                let next_state =
+                  { state with game = None; cash_out_votes = [] }
+                in
+                let%lwt () =
+                  Lwt_list.iter_s
+                    (fun text ->
+                      broadcast next_state (Poker.Protocol.Info text))
+                    (final_standings_messages settled)
+                in
+                Lwt.return next_state)
+              else
+                match Poker.Game.next_hand settled with
+                | None ->
+                    let next_state =
+                      { state with game = None; cash_out_votes = [] }
+                    in
+                    let%lwt () =
+                      Lwt_list.iter_s
+                        (fun text ->
+                          broadcast next_state (Poker.Protocol.Info text))
+                        (final_standings_messages settled)
+                    in
+                    Lwt.return next_state
+                | Some new_game ->
+                    let next_state = { state with game = Some new_game } in
+                    let%lwt () =
+                      broadcast next_state
+                        (Poker.Protocol.Info "Dealing next hand.")
+                    in
+                    let%lwt () =
+                      Lwt_list.iter_s
+                        (fun text ->
+                          broadcast next_state (Poker.Protocol.Info text))
+                        (table_setup_messages new_game)
+                    in
+                    let%lwt () =
+                      broadcast_game_update next_state new_game
+                    in
+                    let%lwt () =
+                      send_private_hole_cards_for_game next_state new_game
+                    in
+                    let%lwt () =
+                      prompt_current_player new_game next_state.clients
+                    in
+                    Lwt.return next_state))
 
 let start_game_if_ready state =
   if
@@ -414,10 +484,31 @@ let handle_chat state player_id text =
         in
         Lwt.return state
 
+let handle_cash_out state player_id wants =
+  let already = List.mem player_id state.cash_out_votes in
+  let cash_out_votes =
+    if wants then
+      if already then state.cash_out_votes
+      else state.cash_out_votes @ [ player_id ]
+    else List.filter (fun id -> id <> player_id) state.cash_out_votes
+  in
+  let next_state = { state with cash_out_votes } in
+  let name =
+    match player_name state player_id with
+    | Some n -> n
+    | None -> "A player"
+  in
+  let msg =
+    if wants then Printf.sprintf "%s will cash out after this hand." name
+    else Printf.sprintf "%s is no longer cashing out." name
+  in
+  let%lwt () = broadcast next_state (Poker.Protocol.Info msg) in
+  Lwt.return next_state
+
 let handle_disconnect state player_id =
   let name_before_removal = player_name state player_id in
   let next_state, removed_client = remove_client state player_id in
-  let next_state = { next_state with game = None } in
+  let next_state = { next_state with game = None; cash_out_votes = [] } in
   match removed_client with
   | None -> Lwt.return state
   | Some client ->
@@ -441,6 +532,8 @@ let handle_event state push_event = function
       | Poker.Protocol.Player_action action ->
           handle_player_action state player_id action
       | Poker.Protocol.Send_chat text -> handle_chat state player_id text
+      | Poker.Protocol.Cash_out wants ->
+          handle_cash_out state player_id wants
       | Poker.Protocol.Disconnect -> handle_disconnect state player_id)
   | Client_disconnected player_id -> handle_disconnect state player_id
 
