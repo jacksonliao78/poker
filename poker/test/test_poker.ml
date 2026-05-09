@@ -537,6 +537,101 @@ let test_terminal_render_cards_variants _ =
   assert_bool "uses two-space separator"
     (contains_substring rendered "  ")
 
+let test_long_card_rendering_all_ranks_and_suits _ =
+  assert_equal
+    [
+      "2 of Diamonds";
+      "3 of Diamonds";
+      "4 of Diamonds";
+      "5 of Diamonds";
+      "6 of Diamonds";
+      "7 of Diamonds";
+      "8 of Diamonds";
+      "9 of Diamonds";
+      "10 of Diamonds";
+      "Jack of Diamonds";
+      "Queen of Diamonds";
+      "King of Diamonds";
+      "Ace of Diamonds";
+    ]
+    (List.map
+       (fun rank ->
+         Poker.Cards.card_to_long_string { Poker.Types.rank; suit = Diamonds })
+       Poker.Cards.all_ranks);
+  assert_equal
+    [ "Ace of Hearts"; "Ace of Diamonds"; "Ace of Clubs"; "Ace of Spades" ]
+    (List.map
+       (fun suit ->
+         Poker.Cards.card_to_long_string { Poker.Types.rank = Ace; suit })
+       Poker.Cards.all_suits)
+
+let test_terminal_unicode_rendering_all_ranks_and_suits _ =
+  let style = { Poker.Terminal_ui.color = false; unicode = true } in
+  assert_equal
+    [
+      "2♣";
+      "3♣";
+      "4♣";
+      "5♣";
+      "6♣";
+      "7♣";
+      "8♣";
+      "9♣";
+      "10♣";
+      "J♣";
+      "Q♣";
+      "K♣";
+      "A♣";
+    ]
+    (List.map
+       (fun rank ->
+         Poker.Terminal_ui.render_card style { Poker.Types.rank; suit = Clubs })
+       Poker.Cards.all_ranks);
+  assert_equal
+    [ "A♥"; "A♦"; "A♣"; "A♠" ]
+    (List.map
+       (fun suit ->
+         Poker.Terminal_ui.render_card style { Poker.Types.rank = Ace; suit })
+       Poker.Cards.all_suits)
+
+let test_apply_action_rejects_invalid_players _ =
+  let game = make_four_player_game () in
+  let current = List.nth game.Poker.Types.players game.table.turn_index in
+  let waiting = List.nth game.players 0 in
+  (match Poker.Game.apply_action game ~player_id:999 Poker.Types.Call with
+  | Error message -> assert_equal "Unknown player." message
+  | Ok _ -> assert_failure "expected unknown player to fail");
+  (match
+     Poker.Game.apply_action game ~player_id:waiting.id Poker.Types.Call
+   with
+  | Error message -> assert_equal "It is not your turn." message
+  | Ok _ -> assert_failure "expected off-turn player to fail");
+  let players =
+    List.mapi
+      (fun index player ->
+        if index = game.table.turn_index then
+          { player with Poker.Types.status = Folded }
+        else player)
+      game.players
+  in
+  match
+    Poker.Game.apply_action { game with players } ~player_id:current.id
+      Poker.Types.Call
+  with
+  | Error message -> assert_equal "You cannot act right now." message
+  | Ok _ -> assert_failure "expected folded current player to fail"
+
+let test_advance_street_on_river_completes_hand _ =
+  let game = make_four_player_game () in
+  let table = { game.Poker.Types.table with street = River } in
+  match Poker.Game.advance_street { game with table } with
+  | Poker.Game.Hand_complete (_, winner) ->
+      assert_bool "winner is one of the active players"
+        (List.exists
+           (fun player -> player.Poker.Types.id = winner.id)
+           game.players)
+  | _ -> assert_failure "expected river to complete the hand"
+
 let tests =
   "poker"
   >::: [
@@ -588,6 +683,14 @@ let tests =
          "protocol_returns_none_and_empty_for_unknown"
          >:: test_protocol_returns_none_and_empty_for_unknown;
          "terminal_render_cards_variants" >:: test_terminal_render_cards_variants;
+         "long_card_rendering_all_ranks_and_suits"
+         >:: test_long_card_rendering_all_ranks_and_suits;
+         "terminal_unicode_rendering_all_ranks_and_suits"
+         >:: test_terminal_unicode_rendering_all_ranks_and_suits;
+         "apply_action_rejects_invalid_players"
+         >:: test_apply_action_rejects_invalid_players;
+         "advance_street_on_river_completes_hand"
+         >:: test_advance_street_on_river_completes_hand;
        ]
 
 let () = run_test_tt_main tests

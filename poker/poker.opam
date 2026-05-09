@@ -14,6 +14,7 @@ depends: [
   "ocaml"
   "lwt"
   "lwt_ppx"
+  "bisect_ppx"
   "ounit2"
   "odoc" {with-doc}
 ]
