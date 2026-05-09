@@ -5,7 +5,7 @@ type style = {
 
 let plain = { color = false; unicode = false }
 let ansi = { color = true; unicode = true }
-let clear_screen = "\027[2J\027[H"
+let clear_screen = "\027[H\027[2J\027[3J"
 
 let wrap style code text =
   if style.color then "\027[" ^ code ^ "m" ^ text ^ "\027[0m" else text
@@ -16,6 +16,8 @@ let red style text = wrap style "31" text
 let green style text = wrap style "32" text
 let yellow style text = wrap style "33" text
 let cyan style text = wrap style "36" text
+let blue style text = wrap style "34" text
+let orange style text = wrap style "38;5;208" text
 let money style amount = green style ("$" ^ string_of_int amount)
 let command style text = yellow style text
 

@@ -15,7 +15,13 @@ let draw_community_cards game ~count =
 (* Clears the bets after each street *)
 let reset_bets game =
   let players =
-    List.map (fun player -> { player with round_bet = 0 }) game.players
+    List.map
+      (fun player ->
+        let last_street_action =
+          if player.status = Folded then player.last_street_action else None
+        in
+        { player with round_bet = 0; last_street_action })
+      game.players
   in
   let table = { game.table with current_bet = 0; min_raise = game.big_blind } in
   { game with players; table }
@@ -235,6 +241,7 @@ let player_state_of_lobby_player player hole_cards =
     hole_cards;
     round_bet = 0;
     status = Active;
+    last_street_action = None;
   }
 
 let post_blind amount player =
@@ -512,6 +519,14 @@ let apply_action game ~player_id action =
   | Error _ as error -> error
   | Ok (players, table_update) -> (
       try
+        let players =
+          List.map
+            (fun p ->
+              if p.id = player_id then
+                { p with last_street_action = Some action }
+              else p)
+            players
+        in
         let table = table_update game.table in
         let game = { game with players; table } in
         Ok (advance_after_action game)

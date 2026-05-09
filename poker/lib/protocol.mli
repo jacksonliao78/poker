@@ -38,6 +38,7 @@ type public_player = {
   is_small_blind : bool;
   is_big_blind : bool;
   is_turn : bool;
+  last_street_action : Types.action option;
 }
 
 (** Public table details needed for a complete terminal redraw. *)

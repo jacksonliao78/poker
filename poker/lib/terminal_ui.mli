@@ -12,6 +12,8 @@ val red : style -> string -> string
 val green : style -> string -> string
 val yellow : style -> string -> string
 val cyan : style -> string -> string
+val blue : style -> string -> string
+val orange : style -> string -> string
 val money : style -> int -> string
 val command : style -> string -> string
 val render_card : style -> Types.card -> string

@@ -157,20 +157,8 @@ let table_setup_messages (game : Poker.Types.game_state) =
     current_turn_message game;
   ]
 
-let prompt_current_player (game : Poker.Types.game_state) clients =
-  let current_player =
-    List.nth game.Poker.Types.players game.table.turn_index
-  in
-  let to_call = max 0 (game.table.current_bet - current_player.round_bet) in
-  match List.find_opt (fun client -> client.id = current_player.id) clients with
-  | None -> Lwt.return_unit
-  | Some client ->
-      safe_send client.output
-        (Poker.Protocol.Info
-           (Printf.sprintf
-              "It is your turn to act. Your stack: $%d. Current bet: $%d. You \
-               need $%d to call."
-              current_player.chips game.table.current_bet to_call))
+let prompt_current_player (_game : Poker.Types.game_state) _clients =
+  Lwt.return_unit
 
 let public_action_message name action =
   match action with

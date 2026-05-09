@@ -33,6 +33,7 @@ type public_player = {
   is_small_blind : bool;
   is_big_blind : bool;
   is_turn : bool;
+  last_street_action : Types.action option;
 }
 
 type table_view = {
@@ -113,6 +114,7 @@ let player_view_of_game (game : Types.game_state) ~player_id =
               is_small_blind = index = small_blind_index;
               is_big_blind = index = big_blind_index;
               is_turn = index = game.table.turn_index;
+              last_street_action = player.last_street_action;
             })
           game.players
       in

@@ -60,6 +60,7 @@ type player_state = {
   hole_cards : card list;
   round_bet : int;
   status : player_status;
+  last_street_action : action option;
 }
 
 type table_state = {

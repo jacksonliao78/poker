@@ -3,7 +3,7 @@ let default_port = 9000
 let event_limit = 8
 
 type event_kind =
-  | Info
+  | Info of int  (* color cycle index *)
   | Chat
   | Problem
 
@@ -22,6 +22,7 @@ type ui_state = {
   mutable input_buffer : string;
   mutable action_index : int option;
   mutable show_recent_activity : bool;
+  mutable info_color_index : int;
   redraw : bool;
   style : Poker.Terminal_ui.style;
 }
@@ -65,9 +66,57 @@ let create_ui_state host port =
     input_buffer = "";
     action_index = None;
     show_recent_activity = true;
+    info_color_index = 0;
     redraw;
     style = terminal_style redraw;
   }
+
+let starts_with prefix s =
+  let lp = String.length prefix and ls = String.length s in
+  ls >= lp && String.sub s 0 lp = prefix
+
+let contains_substring sub s =
+  let ls = String.length s and lsub = String.length sub in
+  let rec scan i =
+    i + lsub <= ls && (String.sub s i lsub = sub || scan (i + 1))
+  in
+  scan 0
+
+let is_turn_message text = starts_with "Player's turn:" text
+
+let is_action_message text =
+  contains_substring " folds." text
+  || contains_substring " calls." text
+  || contains_substring " checks." text
+  || contains_substring " raises by " text
+  || contains_substring " bets " text
+
+let is_round_event text =
+  starts_with "Hand complete." text
+  || starts_with "Dealing next hand." text
+  || starts_with "Game over." text
+
+let is_reveal_event text =
+  starts_with "Flop revealed." text
+  || starts_with "Turn revealed." text
+  || starts_with "River revealed." text
+
+let add_info state text =
+  if
+    not
+      (is_action_message text || is_round_event text || is_reveal_event text)
+  then ()
+  else (
+    let starting = if is_reveal_event text then [] else state.events in
+    let kind = Info state.info_color_index in
+    state.info_color_index <- state.info_color_index + 1;
+    let event = { kind; text } in
+    let rec take remaining = function
+      | _ when remaining = 0 -> []
+      | [] -> []
+      | event :: rest -> event :: take (remaining - 1) rest
+    in
+    state.events <- take 3 (event :: starting))
 
 let add_event state kind text =
   let rec take remaining events =
@@ -117,17 +166,27 @@ let render_money state width amount =
   let text = Printf.sprintf "%*s" width ("$" ^ string_of_int amount) in
   green state.style text
 
+let action_label player =
+  if player.Poker.Protocol.status = Poker.Types.Folded then "[FOLD]"
+  else
+    match player.last_street_action with
+    | None -> ""
+    | Some Poker.Types.Fold -> "[FOLD]"
+    | Some Check -> "[CHECK]"
+    | Some Call -> "[CALL]"
+    | Some (Raise n) -> Printf.sprintf "[RAISE %d]" n
+    | Some (Bet n) -> Printf.sprintf "[BET %d]" n
+
 let render_public_player state player =
   let open Poker.Terminal_ui in
-  let raw_name =
-    if Some player.Poker.Protocol.id = state.player_id then player.name ^ " (you)"
-    else player.name
+  let label = action_label player in
+  let name_with_label =
+    if label = "" then player.Poker.Protocol.name
+    else player.Poker.Protocol.name ^ " " ^ label
   in
-  let padded_name = Printf.sprintf "%-24s" raw_name in
+  let padded_name = Printf.sprintf "%-32s" name_with_label in
   let name =
-    if Some player.Poker.Protocol.id = state.player_id then
-      bold state.style padded_name
-    else padded_name
+    if player.is_turn then bold state.style padded_name else padded_name
   in
   let status = render_status player.status in
   let turn_prefix = if player.is_turn then yellow state.style ">" else " " in
@@ -145,42 +204,97 @@ let render_actions state actions =
       |> List.map (render_legal_action state.style)
       |> String.concat "    "
 
-let render_game state view =
+let render_seats_block state view =
+  let open Poker.Terminal_ui in
+  let players = List.map (render_public_player state) view.Poker.Protocol.players in
+  bold state.style "Seats" :: players
+
+let render_table_block state view =
   let open Poker.Terminal_ui in
   let table = view.Poker.Protocol.table in
-  let players = List.map (render_public_player state) view.players in
-  String.concat "\n"
-    ([
-       bold state.style "Table";
-       Printf.sprintf "Street: %s    Pot: %s    Current bet: %s    Min raise: %s"
-         (render_street table.street)
-         (money state.style table.pot)
-         (money state.style table.current_bet)
-         (money state.style table.min_raise);
-       "Board: " ^ render_cards state.style table.community_cards;
-       "";
-       bold state.style "Seats";
-     ]
-    @ players
-    @ [
-        "";
-        bold state.style "Your hand";
-        render_cards state.style view.your_hole_cards;
-        "";
-        bold state.style "Available actions";
-        render_actions state view.legal_actions;
-      ])
+  let your_stack =
+    match
+      List.find_opt
+        (fun p -> p.Poker.Protocol.id = view.your_id)
+        view.players
+    with
+    | Some p -> p.chips
+    | None -> 0
+  in
+  [
+    bold state.style "Table";
+    Printf.sprintf
+      "Street: %s    Pot: %s    Current bet: %s    Min raise: %s    Stack: %s"
+      (render_street table.street)
+      (money state.style table.pot)
+      (money state.style table.current_bet)
+      (money state.style table.min_raise)
+      (money state.style your_stack);
+  ]
+
+let visible_width s =
+  let len = String.length s in
+  let rec loop i width in_escape =
+    if i >= len then width
+    else
+      let c = s.[i] in
+      if in_escape then
+        if c = 'm' then loop (i + 1) width false else loop (i + 1) width true
+      else if c = '\027' then loop (i + 1) width true
+      else if Char.code c < 0x80 then loop (i + 1) (width + 1) false
+      else if Char.code c < 0xC0 then loop (i + 1) width false
+      else loop (i + 1) (width + 1) false
+  in
+  loop 0 0 false
+
+let pad_to width s =
+  let w = visible_width s in
+  if w >= width then s ^ "    " else s ^ String.make (width - w) ' '
+
+let render_hand_block state view =
+  let open Poker.Terminal_ui in
+  let table = view.Poker.Protocol.table in
+  let hand_label = "Your hand" in
+  let board_label = "Board" in
+  let label_width = 24 in
+  [
+    bold state.style
+      (pad_to label_width hand_label ^ board_label);
+    pad_to label_width (render_cards state.style view.your_hole_cards)
+    ^ render_cards state.style table.community_cards;
+  ]
+
+let render_actions_block state view =
+  let open Poker.Terminal_ui in
+  [
+    bold state.style "Available actions";
+    render_actions state view.Poker.Protocol.legal_actions;
+  ]
 
 let render_event state event =
   let open Poker.Terminal_ui in
   match event.kind with
-  | Info -> dim state.style event.text
+  | Info _ -> orange state.style event.text
   | Chat -> cyan state.style event.text
   | Problem -> red state.style event.text
 
 let prompt_label state =
   match state.game with
-  | Some view when view.Poker.Protocol.legal_actions <> [] -> "Action > "
+  | Some view when view.Poker.Protocol.legal_actions <> [] ->
+      let to_call =
+        List.find_map
+          (function Poker.Protocol.Can_call amount -> Some amount | _ -> None)
+          view.legal_actions
+      in
+      let to_raise =
+        List.find_map
+          (function Poker.Protocol.Can_raise amount -> Some amount | _ -> None)
+          view.legal_actions
+      in
+      (match to_call, to_raise with
+       | Some n, _ -> Printf.sprintf "Your turn ($%d to call) > " n
+       | None, Some n -> Printf.sprintf "Your turn ($%d to raise) > " n
+       | None, None -> "Your turn > ")
   | Some _ -> "Chat > "
   | None -> "Command > "
 
@@ -191,34 +305,42 @@ let render_screen state =
     | None -> "joining"
     | Some id -> "#" ^ string_of_int id
   in
-  let main =
-    match state.game with
-    | Some view -> render_game state view
-    | None -> (
-        match state.lobby with
-        | Some lobby -> render_lobby lobby
-        | None -> "Waiting for lobby update...")
-  in
   let events =
     state.events |> List.rev |> List.map (render_event state) |> String.concat "\n"
   in
-  let recent =
+  let recent_block =
     if state.show_recent_activity then
       [
-        "";
         bold state.style "Recent";
         (if events = "" then dim state.style "(no messages yet)" else events);
       ]
     else []
+  in
+  let body =
+    match state.game with
+    | Some view ->
+        let sep = [ "" ] in
+        render_seats_block state view
+        @ sep @ recent_block
+        @ sep @ render_actions_block state view
+        @ sep @ render_table_block state view
+        @ sep @ render_hand_block state view
+    | None ->
+        let lobby_lines =
+          match state.lobby with
+          | Some lobby -> [ render_lobby lobby ]
+          | None -> [ "Waiting for lobby update..." ]
+        in
+        if recent_block = [] then lobby_lines
+        else lobby_lines @ [ "" ] @ recent_block
   in
   String.concat "\n"
     ([
        bold state.style
          (Printf.sprintf "Poker  %s:%d  Player %s" state.host state.port player);
        String.make 72 '-';
-       main;
      ]
-    @ recent
+    @ body
     @ [ ""; prompt_label state ^ state.input_buffer ])
 
 let redraw state =
@@ -240,20 +362,20 @@ let legacy_text_of_message = function
 let apply_server_message state = function
   | Poker.Protocol.Welcome { player_id; starting_chips; seats_total } ->
       state.player_id <- Some player_id;
-      add_event state Info
+      add_info state
         (Printf.sprintf "Connected. Stack %s across %d seats."
            (Poker.Terminal_ui.money state.style starting_chips)
            seats_total)
   | Lobby_update snapshot ->
       state.lobby <- Some snapshot;
-      if state.game = None then add_event state Info "Lobby updated."
+      if state.game = None then add_info state "Lobby updated."
   | Chat_message { from_name; text } ->
       add_event state Chat (Printf.sprintf "[%s] %s" from_name text)
   | Game_update view ->
       state.game <- Some view;
       state.player_id <- Some view.your_id
   | Error message -> add_event state Problem ("Error: " ^ message)
-  | Info message -> add_event state Info message
+  | Info message -> add_info state message
 
 let handle_server_message state message =
   apply_server_message state message;
@@ -315,11 +437,11 @@ let set_recent_preference state value =
   match String.lowercase_ascii value with
   | "show" ->
       state.show_recent_activity <- true;
-      add_event state Info "Recent activity is visible.";
+      add_info state "Recent activity is visible.";
       Ok None
   | "hide" ->
       state.show_recent_activity <- false;
-      add_event state Info "Recent activity is hidden.";
+      add_info state "Recent activity is hidden.";
       Ok None
   | "clear" ->
       state.events <- [];
@@ -514,7 +636,7 @@ let run_client host port =
   let%lwt () =
     Poker.Wire.send_client_message output (Poker.Protocol.Join join_name)
   in
-  add_event state Info
+  add_info state
     "Use chat without a prefix. Commands: /name <new name>, /pref recent show|hide|clear, /fold, /call, /check, /raise <amount>, /quit.";
   let%lwt () = redraw state in
   let listener =

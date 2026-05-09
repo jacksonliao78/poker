@@ -69,6 +69,7 @@ type player_state = {
   hole_cards : card list;  (** Two private cards dealt to a player. *)
   round_bet : int;
   status : player_status;
+  last_street_action : action option;
 }
 
 (** Shared table state visible to every player. *)
