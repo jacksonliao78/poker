@@ -10,6 +10,7 @@ type server_state = {
   clients : client list;
   game : Poker.Types.game_state option;
   cash_out_votes : int list;
+  host_id : int option;
 }
 
 type event =
@@ -30,6 +31,7 @@ let initial_state =
     clients = [];
     game = None;
     cash_out_votes = [];
+    host_id = None;
   }
 
 let safe_send output message =
@@ -354,26 +356,48 @@ let handle_player_action state player_id action =
                     in
                     Lwt.return next_state))
 
-let start_game_if_ready state =
-  if
-    state.game <> None
-    || joined_client_count state <> Poker.Protocol.seats_total
-  then Lwt.return state
-  else
-    let game = Poker.Game.start (Poker.Lobby.players state.lobby) in
-    let next_state = { state with game = Some game } in
-    let%lwt () =
-      broadcast next_state
-        (Poker.Protocol.Info "4/4 players joined. Starting the game.")
-    in
-    let%lwt () =
-      Lwt_list.iter_s
-        (fun text -> broadcast next_state (Poker.Protocol.Info text))
-        (table_setup_messages game)
-    in
-    let%lwt () = broadcast_game_update next_state game in
-    let%lwt () = prompt_current_player game next_state.clients in
-    Lwt.return next_state
+let begin_game_now state =
+  let joined_players =
+    state.clients
+    |> List.filter (fun c -> c.joined)
+    |> List.filter_map (fun c ->
+           List.find_opt
+             (fun p -> p.Poker.Lobby.id = c.id)
+             (Poker.Lobby.players state.lobby))
+  in
+  let game = Poker.Game.start joined_players in
+  let next_state = { state with game = Some game } in
+  let%lwt () =
+    broadcast next_state
+      (Poker.Protocol.Info
+         (Printf.sprintf "%d players seated. Starting the game."
+            (List.length joined_players)))
+  in
+  let%lwt () =
+    Lwt_list.iter_s
+      (fun text -> broadcast next_state (Poker.Protocol.Info text))
+      (table_setup_messages game)
+  in
+  let%lwt () = broadcast_game_update next_state game in
+  let%lwt () = prompt_current_player game next_state.clients in
+  Lwt.return next_state
+
+let handle_start_game state player_id =
+  let send_error msg =
+    match find_client state player_id with
+    | None -> Lwt.return_unit
+    | Some client -> safe_send client.output (Poker.Protocol.Error msg)
+  in
+  if state.game <> None then
+    let%lwt () = send_error "The game is already in progress." in
+    Lwt.return state
+  else if state.host_id <> Some player_id then
+    let%lwt () = send_error "Only the host can start the game." in
+    Lwt.return state
+  else if joined_client_count state < 2 then
+    let%lwt () = send_error "Need at least 2 players to start." in
+    Lwt.return state
+  else begin_game_now state
 
 let send_welcome client =
   safe_send client.output
@@ -439,6 +463,13 @@ let handle_join state player_id requested_name =
             else
               update_client { state with lobby } { client with joined = true }
           in
+          let next_state =
+            if client.joined then next_state
+            else
+              match next_state.host_id with
+              | Some _ -> next_state
+              | None -> { next_state with host_id = Some player_id }
+          in
           let%lwt () =
             if client.joined then
               match previous_name with
@@ -456,8 +487,19 @@ let handle_join state player_id requested_name =
                 (Poker.Protocol.Info (name ^ " joined the lobby."))
           in
           let%lwt () = broadcast_lobby next_state in
-          if client.joined then Lwt.return next_state
-          else start_game_if_ready next_state)
+          let%lwt () =
+            if client.joined || next_state.host_id <> Some player_id then
+              Lwt.return_unit
+            else
+              match find_client next_state player_id with
+              | None -> Lwt.return_unit
+              | Some host ->
+                  safe_send host.output
+                    (Poker.Protocol.Info
+                       "You are the host. Type /start to begin the game \
+                        (need ≥2 players).")
+          in
+          Lwt.return next_state)
 
 let handle_chat state player_id text =
   let cleaned = String.trim text in
@@ -496,7 +538,16 @@ let handle_cash_out state player_id wants =
 let handle_disconnect state player_id =
   let name_before_removal = player_name state player_id in
   let next_state, removed_client = remove_client state player_id in
-  let next_state = { next_state with game = None; cash_out_votes = [] } in
+  let host_id =
+    if next_state.host_id = Some player_id then
+      match List.find_opt (fun c -> c.joined) next_state.clients with
+      | Some c -> Some c.id
+      | None -> None
+    else next_state.host_id
+  in
+  let next_state =
+    { next_state with game = None; cash_out_votes = []; host_id }
+  in
   match removed_client with
   | None -> Lwt.return state
   | Some client ->
@@ -522,6 +573,7 @@ let handle_event state push_event = function
       | Poker.Protocol.Send_chat text -> handle_chat state player_id text
       | Poker.Protocol.Cash_out wants ->
           handle_cash_out state player_id wants
+      | Poker.Protocol.Start_game -> handle_start_game state player_id
       | Poker.Protocol.Disconnect -> handle_disconnect state player_id)
   | Client_disconnected player_id -> handle_disconnect state player_id
 

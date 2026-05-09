@@ -3,6 +3,7 @@ type client_message =
   | Player_action of Types.action
   | Send_chat of string
   | Cash_out of bool
+  | Start_game
   | Disconnect
 
 type player_summary = {
@@ -68,7 +69,7 @@ type server_message =
   | Info of string
 
 (* Fixing the seat count in the protocol keeps the client UX consistent. *)
-let seats_total = 4
+let seats_total = 10
 
 (* Short names make the text lobby easier to redraw without wrapping badly. *)
 let max_name_length = 20

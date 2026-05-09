@@ -4,6 +4,7 @@ type client_message =
   | Player_action of Types.action
   | Send_chat of string
   | Cash_out of bool
+  | Start_game
   | Disconnect
 
 (** Public player information that can be shown to every connected client. *)

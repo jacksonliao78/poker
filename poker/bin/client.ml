@@ -483,6 +483,7 @@ let command_to_message state line =
     Ok (Some (Poker.Protocol.Cash_out true))
   else if trimmed = "/cashin" || trimmed = "/cash_in" then
     Ok (Some (Poker.Protocol.Cash_out false))
+  else if trimmed = "/start" then Ok (Some Poker.Protocol.Start_game)
   else if List.length words > 0 && List.hd words = "/pref" then
     handle_preference state words
   else if String.length trimmed >= 6 && String.sub trimmed 0 6 = "/name " then
@@ -504,7 +505,7 @@ let command_to_message state line =
       | _ ->
           Some
             (Error
-               "Unknown command. Type chat without /, or use /name, /pref, /fold, /call, /check, /raise, /cashout, /cashin, /quit.")
+               "Unknown command. Type chat without /, or use /name, /pref, /fold, /call, /check, /raise, /start, /cashout, /cashin, /quit.")
     in
     match action_result with
     | None -> Ok (Some (Poker.Protocol.Send_chat trimmed))

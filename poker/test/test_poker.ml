@@ -9,7 +9,7 @@ let test_lobby_add_player _ =
   assert_equal 1 player.id;
   assert_equal 500 player.chips;
   assert_equal 1 (List.length snapshot.Poker.Protocol.players);
-  assert_equal 3 snapshot.seats_open
+  assert_equal (Poker.Protocol.seats_total - 1) snapshot.seats_open
 
 let compare_card left right =
   Stdlib.compare
