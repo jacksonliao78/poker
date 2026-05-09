@@ -23,6 +23,7 @@
   ocaml
   lwt
   lwt_ppx
+  bisect_ppx
   ounit2)
  (tags
   ("add topics" "to describe" your project)))

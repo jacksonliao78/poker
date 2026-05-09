@@ -1,5 +1,7 @@
 (library
  (name poker)
  (libraries lwt.unix)
+ (instrumentation
+  (backend bisect_ppx))
  (preprocess
   (pps lwt_ppx)))
