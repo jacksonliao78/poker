@@ -690,6 +690,42 @@ let test_apply_action_rejects_invalid_players _ =
   | Error message -> assert_equal "You cannot act right now." message
   | Ok _ -> assert_failure "expected folded current player to fail"
 
+let test_award_pot_transfers_to_winner _ =
+  let game = make_four_player_game () in
+  let pot_before = game.Poker.Types.table.pot in
+  assert_bool "pot is non-zero after blinds" (pot_before > 0);
+  let winner = List.hd game.players in
+  let chips_before = winner.chips in
+  let settled = Poker.Game.award_pot game ~winner_id:winner.id in
+  assert_equal 0 settled.table.pot;
+  let winner_after =
+    List.find (fun p -> p.Poker.Types.id = winner.id) settled.players
+  in
+  assert_equal (chips_before + pot_before) winner_after.chips
+
+let test_next_hand_rotates_dealer _ =
+  let game = make_four_player_game () in
+  match Poker.Game.next_hand game with
+  | None -> assert_failure "expected next hand to start"
+  | Some next ->
+      assert_equal 4 (List.length next.Poker.Types.players);
+      (* dealer rotated from player at index 0 to player previously at index 1 *)
+      let prev_seat_1_id = (List.nth game.players 1).id in
+      let new_dealer_id =
+        (List.nth next.players next.table.dealer_index).id
+      in
+      assert_equal prev_seat_1_id new_dealer_id
+
+let test_next_hand_returns_none_when_one_player_has_chips _ =
+  let game = make_four_player_game () in
+  let players =
+    List.mapi
+      (fun i p ->
+        if i = 0 then p else { p with Poker.Types.chips = 0 })
+      game.Poker.Types.players
+  in
+  assert_equal None (Poker.Game.next_hand { game with players })
+
 let test_advance_street_on_river_completes_hand _ =
   let game = make_four_player_game () in
   let table = { game.Poker.Types.table with street = River } in
@@ -735,6 +771,10 @@ let tests =
          "raise_below_min_is_rejected" >:: test_raise_below_min_is_rejected;
          "fold_out_ends_hand" >:: test_fold_out_ends_hand;
          "start_next_hand_resets_state" >:: test_start_next_hand_resets_state;
+         "award_pot_transfers_to_winner" >:: test_award_pot_transfers_to_winner;
+         "next_hand_rotates_dealer" >:: test_next_hand_rotates_dealer;
+         "next_hand_returns_none_when_one_player_has_chips"
+         >:: test_next_hand_returns_none_when_one_player_has_chips;
          "draw_community_cards_moves_from_deck"
          >:: test_draw_community_cards_moves_from_deck;
          "resolve_showdown_picks_highest_rank"

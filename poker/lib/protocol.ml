@@ -2,6 +2,7 @@ type client_message =
   | Join of string
   | Player_action of Types.action
   | Send_chat of string
+  | Cash_out of bool
   | Disconnect
 
 type player_summary = {
