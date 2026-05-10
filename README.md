@@ -15,6 +15,7 @@ dune exec ./bin/server.exe <port>
 dune exec ./bin/client.exe <ip_addr> <port>
 ```
 
+The game requires at least 4 players to start.
 ## Team members
 
 - Jackson Liao-Cheng (jwl323)
