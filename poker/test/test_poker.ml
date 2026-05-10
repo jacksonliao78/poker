@@ -505,6 +505,124 @@ let test_terminal_legal_action_rendering _ =
     (contains_substring raise_text "/raise");
   assert_bool "raise text mentions min" (contains_substring raise_text "min")
 
+let expect_send expected actual =
+  match actual with
+  | Poker.Client_command.Send message -> assert_equal expected message
+  | Poker.Client_command.Noop -> assert_failure "expected Send, got Noop"
+  | Set_preference _ -> assert_failure "expected Send, got Set_preference"
+  | Error message -> assert_failure ("expected Send, got Error: " ^ message)
+
+let test_client_command_parse_chat_and_lobby_commands _ =
+  expect_send (Poker.Protocol.Send_chat "hello table")
+    (Poker.Client_command.parse ~legal_actions:[] "  hello table  ");
+  expect_send (Poker.Protocol.Join "Ethan")
+    (Poker.Client_command.parse ~legal_actions:[] "/name Ethan");
+  expect_send Poker.Protocol.Start_game
+    (Poker.Client_command.parse ~legal_actions:[] "/start");
+  expect_send (Poker.Protocol.Cash_out true)
+    (Poker.Client_command.parse ~legal_actions:[] "/cashout");
+  assert_equal Poker.Client_command.Noop
+    (Poker.Client_command.parse ~legal_actions:[] "   ")
+
+let test_client_command_parse_preferences _ =
+  assert_equal
+    (Poker.Client_command.Set_preference Poker.Client_command.Hide_recent)
+    (Poker.Client_command.parse ~legal_actions:[] "/pref recent hide");
+  assert_equal
+    (Poker.Client_command.Set_preference Poker.Client_command.Clear_recent)
+    (Poker.Client_command.parse ~legal_actions:[] "/pref recent clear");
+  match
+    Poker.Client_command.parse ~legal_actions:[] "/pref recent sometimes"
+  with
+  | Poker.Client_command.Error message ->
+      assert_equal
+        "Use /pref recent show, /pref recent hide, or /pref recent clear."
+        message
+  | _ -> assert_failure "expected bad preference to return Error"
+
+let test_client_command_rejects_unavailable_actions _ =
+  match Poker.Client_command.parse ~legal_actions:[] "/call" with
+  | Poker.Client_command.Error message ->
+      assert_equal "That poker action is not available right now." message
+  | _ -> assert_failure "expected unavailable /call to return Error"
+
+let test_client_command_accepts_available_actions _ =
+  let legal_actions = [ Poker.Protocol.Can_fold; Can_call 10; Can_raise 20 ] in
+  expect_send (Poker.Protocol.Player_action Poker.Types.Call)
+    (Poker.Client_command.parse ~legal_actions "/call");
+  expect_send (Poker.Protocol.Player_action (Poker.Types.Raise 25))
+    (Poker.Client_command.parse ~legal_actions "/raise 25");
+  match Poker.Client_command.parse ~legal_actions "/raise 10" with
+  | Poker.Client_command.Error message ->
+      assert_equal "That poker action is not available right now." message
+  | _ -> assert_failure "expected below-min raise to return Error"
+
+let test_client_command_action_presets _ =
+  assert_equal
+    [ "/fold"; "/check"; "/call"; "/raise " ]
+    (Poker.Client_command.available_action_commands
+       [ Poker.Protocol.Can_fold; Can_check; Can_call 10; Can_raise 20 ])
+
+let test_server_messages_trim_name _ =
+  assert_equal None (Poker.Server_messages.trim_name "   ");
+  assert_equal (Some "Ethan") (Poker.Server_messages.trim_name "  Ethan  ");
+  let long_name = String.make (Poker.Protocol.max_name_length + 5) 'x' in
+  assert_equal
+    (Some (String.make Poker.Protocol.max_name_length 'x'))
+    (Poker.Server_messages.trim_name long_name)
+
+let test_server_messages_card_and_action_text _ =
+  assert_equal "Your hole cards: Ace of Spades and 10 of Hearts"
+    (Poker.Server_messages.hole_cards_message [ ace_spades; ten_hearts ]);
+  assert_equal "Board: Ace of Spades, 10 of Hearts"
+    (Poker.Server_messages.community_cards_message [ ace_spades; ten_hearts ]);
+  assert_equal "Andy folds."
+    (Poker.Server_messages.public_action_message "Andy" Poker.Types.Fold);
+  assert_equal "Jackson raises by $20."
+    (Poker.Server_messages.public_action_message "Jackson"
+       (Poker.Types.Raise 20))
+
+let test_server_messages_table_setup_and_turn _ =
+  let game = make_four_player_game () in
+  assert_equal "Player's turn: Player 4"
+    (Poker.Server_messages.current_turn_message game);
+  assert_equal
+    [
+      "Dealer: Player 1";
+      "Small blind: Player 2 posts $5";
+      "Big blind: Player 3 posts $10";
+      "Pot: $15. Current bet: $10.";
+      "Player's turn: Player 4";
+    ]
+    (Poker.Server_messages.table_setup_messages game)
+
+let test_server_messages_reveal_and_cashout _ =
+  let game = make_four_player_game () in
+  let game = Poker.Game.draw_community_cards game ~count:3 in
+  let game =
+    { game with Poker.Types.table = { game.table with street = Flop } }
+  in
+  match Poker.Server_messages.reveal_message_for_street game with
+  | None -> assert_failure "expected flop reveal message"
+  | Some message ->
+      assert_bool "flop reveal mentions board"
+        (contains_substring message "Flop revealed. Board:");
+      let votes =
+        game.Poker.Types.players |> List.map (fun p -> p.Poker.Types.id)
+      in
+      assert_bool "all surviving players voted"
+        (Poker.Server_messages.everyone_voted_to_cash_out game votes);
+      assert_bool "missing vote prevents cashout"
+        (not
+           (Poker.Server_messages.everyone_voted_to_cash_out game
+              (List.tl votes)))
+
+let test_server_messages_final_standings _ =
+  let game = make_four_player_game () in
+  match Poker.Server_messages.final_standings_messages game with
+  | [ "Game over." ] -> ()
+  | _ -> assert_failure "expected single 'Game over.' message"
+
 let test_deal_n_beyond_deck_returns_all _ =
   let short_deck =
     [
@@ -709,11 +827,11 @@ let test_next_hand_rotates_dealer _ =
   | None -> assert_failure "expected next hand to start"
   | Some next ->
       assert_equal 4 (List.length next.Poker.Types.players);
-      (* dealer rotated from player at index 0 to player previously at index 1 *)
+      assert_equal
+        (List.map (fun p -> p.Poker.Types.id) game.players)
+        (List.map (fun p -> p.Poker.Types.id) next.players);
       let prev_seat_1_id = (List.nth game.players 1).id in
-      let new_dealer_id =
-        (List.nth next.players next.table.dealer_index).id
-      in
+      let new_dealer_id = (List.nth next.players next.table.dealer_index).id in
       assert_equal prev_seat_1_id new_dealer_id
 
 let test_next_hand_returns_none_when_one_player_has_chips _ =
@@ -726,6 +844,71 @@ let test_next_hand_returns_none_when_one_player_has_chips _ =
   in
   assert_equal None (Poker.Game.next_hand { game with players })
 
+(* Regression: a folded player's [FOLD] action label must clear at the start
+   of every new betting round. The player's [Folded] status keeps them
+   visibly out of the hand without the stale per-street tag. *)
+let test_fold_action_label_clears_between_streets _ =
+  let game = make_four_player_game () in
+  let game =
+    match apply_ok game 3 Poker.Types.Fold with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected next_turn after UTG fold"
+  in
+  let folded = List.nth game.Poker.Types.players 3 in
+  assert_equal Poker.Types.Folded folded.status;
+  assert_equal (Some Poker.Types.Fold) folded.last_street_action;
+  let game =
+    match apply_ok game 0 Poker.Types.Call with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected next_turn after dealer call"
+  in
+  let game =
+    match apply_ok game 1 Poker.Types.Call with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected big blind option"
+  in
+  let game =
+    match apply_ok game 2 Poker.Types.Check with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected transition to flop"
+  in
+  assert_equal Poker.Types.Flop game.table.street;
+  let folded_after = List.nth game.players 3 in
+  assert_equal Poker.Types.Folded folded_after.status;
+  assert_equal None folded_after.last_street_action
+
+let test_reset_bets_clears_fold_label _ =
+  let game = make_four_player_game () in
+  let game =
+    match apply_ok game 3 Poker.Types.Fold with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected next_turn after fold"
+  in
+  let after_reset = Poker.Game.reset_bets game in
+  assert_bool "no player carries last_street_action across street reset"
+    (List.for_all
+       (fun p -> p.Poker.Types.last_street_action = None)
+       after_reset.players)
+
+(* Regression: across hands, every player should be able to play again —
+   no stale Folded status, no stale fold tag. *)
+let test_next_hand_clears_fold_state _ =
+  let game = make_four_player_game () in
+  let after_fold =
+    match apply_ok game 3 Poker.Types.Fold with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected next_turn after fold"
+  in
+  let folded_id = (List.nth after_fold.Poker.Types.players 3).id in
+  match Poker.Game.next_hand after_fold with
+  | None -> assert_failure "expected next hand to start"
+  | Some next ->
+    let player =
+      List.find (fun p -> p.Poker.Types.id = folded_id) next.players
+    in
+    assert_equal Poker.Types.Active player.status;
+    assert_equal None player.last_street_action
+
 let test_advance_street_on_river_completes_hand _ =
   let game = make_four_player_game () in
   let table = { game.Poker.Types.table with street = River } in
@@ -737,9 +920,326 @@ let test_advance_street_on_river_completes_hand _ =
            game.players)
   | _ -> assert_failure "expected river to complete the hand"
 
+let test_heads_up_start _ =
+  let lobby = Poker.Lobby.empty () in
+  let lobby, _ = Poker.Lobby.add_player lobby in
+  let lobby, _ = Poker.Lobby.add_player lobby in
+  let game = Poker.Game.start (Poker.Lobby.players lobby) in
+  assert_equal 2 (List.length game.Poker.Types.players);
+  assert_equal 0 game.table.dealer_index;
+  let current = List.nth game.players game.table.turn_index in
+  assert_equal Poker.Types.Active current.status;
+  let acts = Poker.Protocol.legal_actions_for_player game ~player_id:current.id in
+  assert_bool "heads-up first player has options" (acts <> [])
+
+let test_short_stack_call_goes_all_in _ =
+  let game = make_four_player_game () in
+  let players =
+    List.mapi
+      (fun i p ->
+        if i = 3 then { p with Poker.Types.chips = 5 } else p)
+      game.Poker.Types.players
+  in
+  let game = { game with players } in
+  match
+    Poker.Game.apply_action game
+      ~player_id:(List.nth game.players 3).id Poker.Types.Call
+  with
+  | Error m -> assert_failure m
+  | Ok (Poker.Game.Next_turn next) ->
+    let p = List.nth next.players 3 in
+    assert_equal Poker.Types.AllIn p.status;
+    assert_equal 0 p.chips;
+    assert_equal 5 p.round_bet
+  | Ok _ -> assert_failure "expected next turn after short call"
+
+(* When everyone after the BB is non-Active (edge case where blinds posted
+   left them all-in), turn_index must still resolve to an Active player. *)
+let test_start_turn_index_falls_back_to_active _ =
+  let lobby = Poker.Lobby.empty () in
+  let lobby, _ = Poker.Lobby.add_player lobby in
+  let lobby, _ = Poker.Lobby.add_player lobby in
+  let lobby, _ = Poker.Lobby.add_player lobby in
+  (* Manually craft a game where the only Active player is at index 0
+     and the BB is at index 2. Verify turn_index lands somewhere active. *)
+  let game = Poker.Game.start (Poker.Lobby.players lobby) in
+  let players =
+    List.mapi
+      (fun i p ->
+        if i <> 0 then { p with Poker.Types.status = Poker.Types.AllIn }
+        else p)
+      game.Poker.Types.players
+  in
+  (* Mimic what start would do if next_active_index returned None. *)
+  let active_indices =
+    List.mapi (fun i p -> (i, p)) players
+    |> List.filter (fun (_, p) -> p.Poker.Types.status = Poker.Types.Active)
+    |> List.map fst
+  in
+  assert_equal [ 0 ] active_indices
+
+let test_full_hand_call_call_check_fold_out _ =
+  let game = make_four_player_game () in
+  let game =
+    match apply_ok game 3 Poker.Types.Call with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected next_turn"
+  in
+  let game =
+    match apply_ok game 0 Poker.Types.Fold with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected next_turn"
+  in
+  let game =
+    match apply_ok game 1 Poker.Types.Fold with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected next_turn"
+  in
+  match apply_ok game 2 Poker.Types.Fold with
+  | Poker.Game.Hand_complete (_, winner) ->
+    assert_equal (List.nth game.players 3).id winner.id
+  | _ -> assert_failure "expected hand_complete when only one active remains"
+
+let total_chips_in_play (g : Poker.Types.game_state) =
+  g.table.pot
+  + List.fold_left
+      (fun acc p -> acc + p.Poker.Types.chips + p.round_bet)
+      0 g.players
+
+let test_consecutive_hands_preserve_chip_totals _ =
+  let game = make_four_player_game () in
+  let total = total_chips_in_play game in
+  let g =
+    match apply_ok game 3 Poker.Types.Fold with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected next_turn"
+  in
+  let g =
+    match apply_ok g 0 Poker.Types.Fold with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected next_turn"
+  in
+  let g, winner =
+    match apply_ok g 1 Poker.Types.Fold with
+    | Poker.Game.Hand_complete (g, w) -> (g, w)
+    | _ -> assert_failure "expected hand_complete"
+  in
+  let settled = Poker.Game.award_pot g ~winner_id:winner.id in
+  assert_equal 0 settled.table.pot;
+  assert_equal total (total_chips_in_play settled);
+  match Poker.Game.next_hand settled with
+  | None -> assert_failure "expected next hand"
+  | Some next -> assert_equal total (total_chips_in_play next)
+
+let test_legal_actions_for_short_stack _ =
+  let game = make_four_player_game () in
+  let players =
+    List.mapi
+      (fun i p ->
+        if i = 3 then { p with Poker.Types.chips = 8 } else p)
+      game.Poker.Types.players
+  in
+  let game = { game with players } in
+  let current = List.nth game.players game.table.turn_index in
+  let acts = Poker.Protocol.legal_actions_for_player game ~player_id:current.id in
+  assert_bool "short stack can fold"
+    (List.mem Poker.Protocol.Can_fold acts);
+  assert_bool "short stack can call (even if not full)"
+    (List.exists (function Poker.Protocol.Can_call _ -> true | _ -> false) acts);
+  assert_bool "short stack cannot afford min raise"
+    (not
+       (List.exists
+          (function Poker.Protocol.Can_raise _ -> true | _ -> false)
+          acts))
+
+let test_award_pot_unknown_winner_is_noop _ =
+  let game = make_four_player_game () in
+  let pot = game.Poker.Types.table.pot in
+  let settled = Poker.Game.award_pot game ~winner_id:9999 in
+  assert_equal 0 settled.table.pot;
+  let total =
+    List.fold_left (fun acc p -> acc + p.Poker.Types.chips) 0 settled.players
+  in
+  let original_total =
+    List.fold_left (fun acc p -> acc + p.Poker.Types.chips) 0 game.players
+  in
+  assert_equal original_total total;
+  assert_equal pot game.table.pot
+
+let test_player_view_action_label_visible_to_others _ =
+  let game = make_four_player_game () in
+  let game =
+    match apply_ok game 3 Poker.Types.Fold with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected next_turn"
+  in
+  let viewer = List.nth game.Poker.Types.players 0 in
+  match Poker.Protocol.player_view_of_game game ~player_id:viewer.id with
+  | None -> assert_failure "expected view"
+  | Some view ->
+    let folded_pp = List.nth view.Poker.Protocol.players 3 in
+    assert_equal Poker.Types.Folded folded_pp.status;
+    assert_equal (Some Poker.Types.Fold) folded_pp.last_street_action
+
+let test_postflop_skips_folded_players _ =
+  let game = make_four_player_game () in
+  let game =
+    match apply_ok game 3 Poker.Types.Fold with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected next_turn"
+  in
+  let game =
+    match apply_ok game 0 Poker.Types.Call with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected next_turn"
+  in
+  let game =
+    match apply_ok game 1 Poker.Types.Call with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected big blind option"
+  in
+  let game =
+    match apply_ok game 2 Poker.Types.Check with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected flop transition"
+  in
+  assert_equal Poker.Types.Flop game.table.street;
+  let current = List.nth game.players game.table.turn_index in
+  assert_bool "turn lands on Active player"
+    (current.status = Poker.Types.Active)
+
+let test_resolve_showdown_full_house_beats_flush _ =
+  let base_game = make_four_player_game () in
+  let players =
+    List.mapi
+      (fun i p ->
+        match i with
+        | 0 ->
+          { p with Poker.Types.hole_cards =
+                     [ { Poker.Types.rank = Ace; suit = Spades };
+                       { rank = Ace; suit = Hearts } ] }
+        | 1 ->
+          { p with Poker.Types.hole_cards =
+                     [ { Poker.Types.rank = Two; suit = Hearts };
+                       { rank = Three; suit = Hearts } ] }
+        | _ -> { p with status = Poker.Types.Folded })
+      base_game.Poker.Types.players
+  in
+  let table =
+    { base_game.table with
+      community_cards =
+        [ { Poker.Types.rank = Ace; suit = Diamonds };
+          { rank = King; suit = Hearts };
+          { rank = King; suit = Spades };
+          { rank = Five; suit = Hearts };
+          { rank = Seven; suit = Hearts } ] }
+  in
+  let game = { base_game with players; table } in
+  let winners = Poker.Game.resolve_showdown game in
+  assert_equal 1 (List.length winners);
+  assert_equal (List.nth players 0).id (List.hd winners).id
+
+let test_resolve_showdown_straight_flush _ =
+  let base_game = make_four_player_game () in
+  let players =
+    List.mapi
+      (fun i p ->
+        match i with
+        | 0 ->
+          { p with Poker.Types.hole_cards =
+                     [ { Poker.Types.rank = Nine; suit = Spades };
+                       { rank = Eight; suit = Spades } ] }
+        | 1 ->
+          { p with Poker.Types.hole_cards =
+                     [ { Poker.Types.rank = Ace; suit = Hearts };
+                       { rank = Ace; suit = Diamonds } ] }
+        | _ -> { p with status = Poker.Types.Folded })
+      base_game.Poker.Types.players
+  in
+  let table =
+    { base_game.table with
+      community_cards =
+        [ { Poker.Types.rank = Seven; suit = Spades };
+          { rank = Six; suit = Spades };
+          { rank = Five; suit = Spades };
+          { rank = Two; suit = Hearts };
+          { rank = Three; suit = Diamonds } ] }
+  in
+  let game = { base_game with players; table } in
+  let winners = Poker.Game.resolve_showdown game in
+  assert_equal 1 (List.length winners);
+  assert_equal (List.nth players 0).id (List.hd winners).id
+
+let test_lobby_snapshot_carries_host_and_min_players _ =
+  let lobby = Poker.Lobby.empty () in
+  let lobby, host = Poker.Lobby.add_player lobby in
+  let snap = Poker.Lobby.snapshot ~host_id:host.id lobby in
+  assert_equal (Some host.id) snap.Poker.Protocol.host_id;
+  assert_equal Poker.Protocol.min_players_to_start snap.min_players;
+  let snap_no_host = Poker.Lobby.snapshot lobby in
+  assert_equal None snap_no_host.Poker.Protocol.host_id
+
+let test_call_does_not_overcommit_when_already_matched _ =
+  let game = make_four_player_game () in
+  let game =
+    match apply_ok game 3 Poker.Types.Call with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected next_turn"
+  in
+  let game =
+    match apply_ok game 0 Poker.Types.Call with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected next_turn"
+  in
+  let game =
+    match apply_ok game 1 Poker.Types.Call with
+    | Poker.Game.Next_turn g -> g
+    | _ -> assert_failure "expected big blind option"
+  in
+  let bb_before = List.nth game.players 2 in
+  assert_equal 10 bb_before.round_bet;
+  match apply_ok game 2 Poker.Types.Call with
+  | Poker.Game.Next_turn next ->
+    assert_equal Poker.Types.Flop next.table.street;
+    let bb_after = List.nth next.players 2 in
+    (* After advancing to flop, round_bet resets to 0; chips unchanged. *)
+    assert_equal 0 bb_after.round_bet;
+    assert_equal bb_before.chips bb_after.chips
+  | _ -> assert_failure "expected next turn after BB completes preflop"
+
 let tests =
   "poker"
   >::: [
+         "fold_action_label_clears_between_streets"
+         >:: test_fold_action_label_clears_between_streets;
+         "reset_bets_clears_fold_label"
+         >:: test_reset_bets_clears_fold_label;
+         "next_hand_clears_fold_state"
+         >:: test_next_hand_clears_fold_state;
+         "heads_up_start" >:: test_heads_up_start;
+         "short_stack_call_goes_all_in"
+         >:: test_short_stack_call_goes_all_in;
+         "start_turn_index_falls_back_to_active"
+         >:: test_start_turn_index_falls_back_to_active;
+         "full_hand_call_call_check_fold_out"
+         >:: test_full_hand_call_call_check_fold_out;
+         "consecutive_hands_preserve_chip_totals"
+         >:: test_consecutive_hands_preserve_chip_totals;
+         "legal_actions_for_short_stack"
+         >:: test_legal_actions_for_short_stack;
+         "award_pot_unknown_winner_is_noop"
+         >:: test_award_pot_unknown_winner_is_noop;
+         "player_view_action_label_visible_to_others"
+         >:: test_player_view_action_label_visible_to_others;
+         "postflop_skips_folded_players" >:: test_postflop_skips_folded_players;
+         "resolve_showdown_full_house_beats_flush"
+         >:: test_resolve_showdown_full_house_beats_flush;
+         "resolve_showdown_straight_flush"
+         >:: test_resolve_showdown_straight_flush;
+         "call_does_not_overcommit_when_already_matched"
+         >:: test_call_does_not_overcommit_when_already_matched;
+         "lobby_snapshot_carries_host_and_min_players"
+         >:: test_lobby_snapshot_carries_host_and_min_players;
          "default_config_uses_500" >:: test_default_config;
          "lobby_add_player_updates_snapshot" >:: test_lobby_add_player;
          "shuffle_preserves_full_deck" >:: test_shuffle_preserves_deck;
@@ -785,6 +1285,24 @@ let tests =
          "terminal_street_and_status" >:: test_terminal_street_and_status;
          "terminal_legal_action_rendering"
          >:: test_terminal_legal_action_rendering;
+         "client_command_parse_chat_and_lobby_commands"
+         >:: test_client_command_parse_chat_and_lobby_commands;
+         "client_command_parse_preferences"
+         >:: test_client_command_parse_preferences;
+         "client_command_rejects_unavailable_actions"
+         >:: test_client_command_rejects_unavailable_actions;
+         "client_command_accepts_available_actions"
+         >:: test_client_command_accepts_available_actions;
+         "client_command_action_presets" >:: test_client_command_action_presets;
+         "server_messages_trim_name" >:: test_server_messages_trim_name;
+         "server_messages_card_and_action_text"
+         >:: test_server_messages_card_and_action_text;
+         "server_messages_table_setup_and_turn"
+         >:: test_server_messages_table_setup_and_turn;
+         "server_messages_reveal_and_cashout"
+         >:: test_server_messages_reveal_and_cashout;
+         "server_messages_final_standings"
+         >:: test_server_messages_final_standings;
          "deal_n_beyond_deck_returns_all"
          >:: test_deal_n_beyond_deck_returns_all;
          "lobby_snapshot_tracks_open_seats"

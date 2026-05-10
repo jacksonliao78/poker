@@ -12,15 +12,13 @@ let draw_community_cards game ~count =
   let table = { game.table with community_cards } in
   { game with deck; table }
 
-(* Clears the bets after each street *)
+(* Clears the bets after each street. The per-street action label is also
+   cleared so the [FOLD] tag from a previous street no longer lingers; the
+   player's [Folded] status keeps them visibly out of the hand. *)
 let reset_bets game =
   let players =
     List.map
-      (fun player ->
-        let last_street_action =
-          if player.status = Folded then player.last_street_action else None
-        in
-        { player with round_bet = 0; last_street_action })
+      (fun player -> { player with round_bet = 0; last_street_action = None })
       game.players
   in
   let table = { game.table with current_bet = 0; min_raise = game.big_blind } in
@@ -203,7 +201,7 @@ and resolve_showdown game =
           (evaluate_five first) rest
   in
   let contenders =
-    List.filter (fun player -> player.status <> Folded) game.players
+    List.filter (fun player -> player.status = Active || player.status = AllIn) game.players
   in
   let hand_score player =
     let all_cards = List.concat [ player.hole_cards; game.table.community_cards ] in
@@ -277,12 +275,12 @@ let round_start_index game =
   | None -> nominal_start
 
 let active_players players =
-  List.filter (fun player -> player.status <> Folded) players
+  List.filter (fun player -> player.status = Active || player.status = AllIn) players
 
 let betting_round_complete players current_bet =
   List.for_all
     (fun player ->
-      player.status = Folded || player.status = AllIn
+      player.status = Folded || player.status = AllIn || player.status = Out
       || player.round_bet = current_bet)
     players
 
@@ -365,14 +363,13 @@ let advance_after_action game =
     | Some turn_index ->
         Next_turn { game with table = { game.table with turn_index } }
 
-let start players =
+let start_with_dealer players ~dealer_index =
   let deck = Cards.full_deck |> Cards.shuffle in
   let hole_cards_by_player, deck = deal_hole_cards players deck in
   let players =
     List.map2 player_state_of_lobby_player players hole_cards_by_player
   in
   let player_count = List.length players in
-  let dealer_index = 0 in
   let small_blind_index = (dealer_index + 1) mod player_count in
   let big_blind_index = (dealer_index + 2) mod player_count in
   let small_blind_player = List.nth players small_blind_index in
@@ -390,12 +387,18 @@ let start players =
     update_player_at big_blind_index (fun _ -> big_blind_player) players
   in
   let current_bet = max small_blind big_blind in
+  (* Prefer the first Active player after the big blind. If none exist
+     (everyone went all-in posting blinds), fall back to the first Active
+     player anywhere — and only use the big blind seat as a last resort. *)
   let turn_index =
     match
       next_active_index players ((big_blind_index + 1) mod player_count)
     with
     | Some index -> index
-    | None -> big_blind_index
+    | None ->
+        (match next_active_index players 0 with
+         | Some index -> index
+         | None -> big_blind_index)
   in
   let table =
     {
@@ -416,6 +419,8 @@ let start players =
     big_blind = Types.default_config.big_blind;
   }
 
+let start players = start_with_dealer players ~dealer_index:0
+
 (* Move the current pot into the winner's stack and zero the pot. *)
 let award_pot game ~winner_id =
   let pot = game.table.pot in
@@ -427,18 +432,30 @@ let award_pot game ~winner_id =
         else player)
       game.players
   in
+  let players =
+    List.map
+      (fun p -> if p.chips = 0 then { p with status = Out } else p)
+      players
+  in
   { game with players; table = { game.table with pot = 0 } }
 
-(* Start the next hand using the previous game's surviving players (chips > 0).
-   Rotates the dealer button to the next surviving seat in original seating
-   order. Returns [None] if ≤1 player has chips left. *)
+(* Start the next hand, keeping all seats (including busted players marked
+   [Out]) so the UI can show who was eliminated. Returns [None] if ≤1 player
+   still has chips. *)
 let next_hand game =
   let surviving = List.filter (fun p -> p.chips > 0) game.players in
   match surviving with
   | [] | [ _ ] -> None
   | _ ->
-      let to_lobby p =
-        { Lobby.id = p.id; name = p.name; chips = p.chips; connected = true }
+      let deck = Cards.full_deck |> Cards.shuffle in
+      let surviving_count = List.length surviving in
+      let first_pass, deck = Cards.deal_n surviving_count deck in
+      let second_pass, deck = Cards.deal_n surviving_count deck in
+      let hole_cards_by_id =
+        List.map2
+          (fun p cards -> (p.id, cards))
+          surviving
+          (List.map2 (fun a b -> [ a; b ]) first_pass second_pass)
       in
       let n_old = List.length game.players in
       let rec next_surviving_after offset =
@@ -451,13 +468,75 @@ let next_hand game =
           else next_surviving_after (offset + 1)
       in
       let new_dealer = next_surviving_after 1 in
-      let rec rotate acc = function
-        | [] -> List.rev acc
-        | h :: _ as lst when h.id = new_dealer.id -> lst @ List.rev acc
-        | h :: t -> rotate (h :: acc) t
+      let dealer_index =
+        let rec find i = function
+          | [] -> 0
+          | p :: _ when p.id = new_dealer.id -> i
+          | _ :: t -> find (i + 1) t
+        in
+        find 0 game.players
       in
-      let rotated = rotate [] surviving in
-      Some (start (List.map to_lobby rotated))
+      let player_count = n_old in
+      let new_players =
+        List.map
+          (fun p ->
+            let hole_cards =
+              match List.assoc_opt p.id hole_cards_by_id with
+              | Some cards -> cards
+              | None -> []
+            in
+            let status = if p.chips > 0 then Active else Out in
+            { p with hole_cards; round_bet = 0; status; last_street_action = None })
+          game.players
+      in
+      let small_blind_index =
+        match next_active_index new_players ((dealer_index + 1) mod player_count) with
+        | Some i -> i
+        | None -> (dealer_index + 1) mod player_count
+      in
+      let big_blind_index =
+        match next_active_index new_players ((small_blind_index + 1) mod player_count) with
+        | Some i -> i
+        | None -> (small_blind_index + 1) mod player_count
+      in
+      let players_arr = Array.of_list new_players in
+      let sb = players_arr.(small_blind_index) in
+      let sb, small_blind = post_blind Types.default_config.small_blind sb in
+      players_arr.(small_blind_index) <- sb;
+      let bb = players_arr.(big_blind_index) in
+      let bb, big_blind = post_blind Types.default_config.big_blind bb in
+      players_arr.(big_blind_index) <- bb;
+      let new_players = Array.to_list players_arr in
+      let current_bet = max small_blind big_blind in
+      let turn_index =
+        match
+          next_active_index new_players ((big_blind_index + 1) mod player_count)
+        with
+        | Some i -> i
+        | None ->
+            (match next_active_index new_players 0 with
+             | Some i -> i
+             | None -> big_blind_index)
+      in
+      let table =
+        {
+          community_cards = [];
+          pot = small_blind + big_blind;
+          current_bet;
+          min_raise = Types.default_config.big_blind;
+          dealer_index;
+          turn_index;
+          street = Preflop;
+        }
+      in
+      Some
+        {
+          players = new_players;
+          deck;
+          table;
+          small_blind = Types.default_config.small_blind;
+          big_blind = Types.default_config.big_blind;
+        }
 
 (* Starts next hand. *)
 let start_next_hand game =
@@ -502,17 +581,38 @@ let apply_action game ~player_id action =
             else if player.chips < call_amount + raise_amount then
               raise (Invalid_argument "You do not have enough chips to raise.")
             else
-              let player, committed =
-                commit_chips player (call_amount + raise_amount)
+              let active_opponents =
+                List.filter
+                  (fun p -> p.id <> player_id && p.status = Active)
+                  game.players
               in
-              ( player,
-                fun current_table ->
-                  {
-                    current_table with
-                    pot = current_table.pot + committed;
-                    current_bet = player.round_bet;
-                    min_raise = raise_amount;
-                  } ))
+              let max_raise =
+                match active_opponents with
+                | [] -> raise_amount
+                | _ ->
+                    let min_opp =
+                      List.fold_left
+                        (fun acc p -> min acc (p.chips + p.round_bet))
+                        max_int active_opponents
+                    in
+                    min_opp - table.current_bet
+              in
+              if raise_amount > max_raise then
+                raise
+                  (Invalid_argument
+                     "Raise exceeds what any opponent can match.")
+              else
+                let player, committed =
+                  commit_chips player (call_amount + raise_amount)
+                in
+                ( player,
+                  fun current_table ->
+                    {
+                      current_table with
+                      pot = current_table.pot + committed;
+                      current_bet = player.round_bet;
+                      min_raise = raise_amount;
+                    } ))
     | Bet _ -> Error "Bet is not supported yet."
   in
   match result with

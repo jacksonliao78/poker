@@ -16,6 +16,8 @@ type player_summary = {
 type lobby_snapshot = {
   players : player_summary list;
   seats_open : int;
+  host_id : int option;
+  min_players : int;
 }
 
 type legal_action =
@@ -71,6 +73,8 @@ type server_message =
 (* Fixing the seat count in the protocol keeps the client UX consistent. *)
 let seats_total = 10
 
+let min_players_to_start = 4
+
 (* Short names make the text lobby easier to redraw without wrapping badly. *)
 let max_name_length = 20
 
@@ -82,9 +86,27 @@ let legal_actions_for_player (game : Types.game_state) ~player_id =
   | Some player when player.status <> Types.Active -> []
   | Some player ->
       let to_call = max 0 (game.table.current_bet - player.round_bet) in
+      let active_opponents =
+        List.filter
+          (fun p -> p.Types.id <> player.Types.id && p.status = Types.Active)
+          game.players
+      in
+      let effective_max_raise =
+        match active_opponents with
+        | [] -> 0
+        | _ ->
+            let min_opp =
+              List.fold_left
+                (fun acc p -> min acc (p.Types.chips + p.round_bet))
+                max_int active_opponents
+            in
+            min_opp - game.table.current_bet
+      in
       let raise =
-        if player.chips >= to_call + game.table.min_raise then
-          [ Can_raise game.table.min_raise ]
+        if
+          player.chips >= to_call + game.table.min_raise
+          && game.table.min_raise <= effective_max_raise
+        then [ Can_raise game.table.min_raise ]
         else []
       in
       if to_call > 0 then

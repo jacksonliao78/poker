@@ -41,6 +41,7 @@ type player_status =
   | Active
   | Folded
   | AllIn
+  | Out
 
 (* this could also just be one set type*)
 type bot_style =

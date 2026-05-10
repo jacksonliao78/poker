@@ -42,13 +42,15 @@ type action =
   | Bet of int
   | Raise of int
 
-(** A player's status within the current hand. *)
+(** A player's status within the current hand. [Out] means permanently
+    eliminated (chips = 0); these seats remain visible but do not act. *)
 type player_status =
   | Active
   | Folded
   | AllIn
+  | Out
 
-(** Bot play-style personalities . *)
+(** Bot play-style personalities. *)
 type bot_style =
   | Passive
   | Aggressive
@@ -62,24 +64,28 @@ type controller =
 (** State tracked for a seated player. *)
 type player_state = {
   id : int;
-  name : string;
+      (** Stable seat identity used by the server instead of display names. *)
+  name : string;  (** Display name already suitable for the terminal layout. *)
   controller : controller;
       (** Whether the seat is human-controlled or automated. *)
-  chips : int;
+  chips : int;  (** Chips not yet committed to the current pot. *)
   hole_cards : card list;  (** Two private cards dealt to a player. *)
-  round_bet : int;
+  round_bet : int;  (** Chips committed on the current betting street. *)
   status : player_status;
+      (** Whether this player can still act or win the current hand. *)
   last_street_action : action option;
+      (** Last action kept for redraw context until the next betting street. *)
 }
 
 (** Shared table state visible to every player. *)
 type table_state = {
-  community_cards : card list;
-  pot : int;
+  community_cards : card list;  (** Public board cards in deal order. *)
+  pot : int;  (** Chips committed to the hand and waiting to be awarded. *)
   current_bet : int;
-  min_raise : int;
-  dealer_index : int;
-  turn_index : int;
+      (** Largest per-player commitment required to stay in the street. *)
+  min_raise : int;  (** Smallest legal raise over the amount needed to call. *)
+  dealer_index : int;  (** Index of the button in [game_state.players]. *)
+  turn_index : int;  (** Index of the current actor in [game_state.players]. *)
   street : street;
 }
 
@@ -89,15 +95,17 @@ type game_state = {
   deck : card list;  (** Remaining cards in the deck for a game. *)
   table : table_state;
   small_blind : int;
+      (** Small blind amount copied into the hand for stable rule checks. *)
   big_blind : int;
+      (** Big blind amount copied into the hand for minimum-raise resets. *)
 }
 
-(** Table-wide constants *)
+(** Table-wide constants used when creating new lobby seats and hands. *)
 type config = {
-  starting_chips : int;
-  small_blind : int;
-  big_blind : int;
+  starting_chips : int;  (** Initial stack assigned to a new lobby player. *)
+  small_blind : int;  (** Forced bet posted by the small blind. *)
+  big_blind : int;  (** Forced bet posted by the big blind. *)
 }
 
-(** Default configuration. *)
+(** [default_config] is the table configuration used by lobby and hand setup. *)
 val default_config : config

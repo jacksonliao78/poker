@@ -68,6 +68,7 @@ let render_status = function
   | Types.Active -> "active"
   | Folded -> "folded"
   | AllIn -> "all-in"
+  | Out -> "out"
 
 let render_legal_action style = function
   | Protocol.Can_fold -> command style "/fold"

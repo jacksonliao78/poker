@@ -44,7 +44,7 @@ let player_name lobby ~player_id =
   |> List.find_opt (fun player -> player.id = player_id)
   |> Option.map (fun player -> player.name)
 
-let snapshot lobby =
+let snapshot ?host_id lobby =
   let players =
     List.map
       (fun player ->
@@ -56,4 +56,9 @@ let snapshot lobby =
         })
       lobby.players
   in
-  { Protocol.players; seats_open = Protocol.seats_total - List.length players }
+  {
+    Protocol.players;
+    seats_open = Protocol.seats_total - List.length players;
+    host_id;
+    min_players = Protocol.min_players_to_start;
+  }
