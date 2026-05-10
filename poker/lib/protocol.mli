@@ -83,7 +83,10 @@ val seats_total : int
 val max_name_length : int
 
 (** Derives turn-sensitive legal actions from the authoritative game state. *)
-val legal_actions_for_player : Types.game_state -> player_id:int -> legal_action list
+val legal_actions_for_player :
+  Types.game_state -> player_id:int -> legal_action list
 
-(** Builds the personalized table view without leaking another player's cards. *)
-val player_view_of_game : Types.game_state -> player_id:int -> player_view option
+(** Builds the personalized table view without leaking another player's cards.
+*)
+val player_view_of_game :
+  Types.game_state -> player_id:int -> player_view option

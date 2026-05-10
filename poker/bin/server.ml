@@ -199,15 +199,12 @@ let send_private_hole_cards_for_game state (game : Poker.Types.game_state) =
 let final_standings_messages (game : Poker.Types.game_state) =
   let standings =
     game.Poker.Types.players
-    |> List.map (fun p ->
-           Printf.sprintf "%s: $%d" p.Poker.Types.name p.chips)
+    |> List.map (fun p -> Printf.sprintf "%s: $%d" p.Poker.Types.name p.chips)
   in
   "Game over. Final standings:" :: standings
 
 let everyone_voted_to_cash_out (game : Poker.Types.game_state) votes =
-  let surviving =
-    List.filter (fun p -> p.Poker.Types.chips > 0) game.players
-  in
+  let surviving = List.filter (fun p -> p.Poker.Types.chips > 0) game.players in
   match surviving with
   | [] -> false
   | _ -> List.for_all (fun p -> List.mem p.Poker.Types.id votes) surviving
@@ -285,7 +282,7 @@ let handle_player_action state player_id action =
                 send_private_hole_cards_for_game next_state next_game
               in
               Lwt.return next_state
-          | Poker.Game.Hand_complete (next_game, winner) ->
+          | Poker.Game.Hand_complete (next_game, winner) -> (
               let winner_name =
                 if winner.Poker.Types.status = Poker.Types.Folded then
                   actor_name
@@ -303,13 +300,13 @@ let handle_player_action state player_id action =
               let%lwt () =
                 broadcast intermediate_state
                   (Poker.Protocol.Info
-                     (Printf.sprintf "Hand complete. %s wins $%d."
-                        winner_name pot_amount))
+                     (Printf.sprintf "Hand complete. %s wins $%d." winner_name
+                        pot_amount))
               in
               let end_now =
                 everyone_voted_to_cash_out settled state.cash_out_votes
               in
-              if end_now then (
+              if end_now then
                 let next_state =
                   { state with game = None; cash_out_votes = [] }
                 in
@@ -319,7 +316,7 @@ let handle_player_action state player_id action =
                       broadcast next_state (Poker.Protocol.Info text))
                     (final_standings_messages settled)
                 in
-                Lwt.return next_state)
+                Lwt.return next_state
               else
                 match Poker.Game.next_hand settled with
                 | None ->
@@ -345,25 +342,23 @@ let handle_player_action state player_id action =
                           broadcast next_state (Poker.Protocol.Info text))
                         (table_setup_messages new_game)
                     in
-                    let%lwt () =
-                      broadcast_game_update next_state new_game
-                    in
+                    let%lwt () = broadcast_game_update next_state new_game in
                     let%lwt () =
                       send_private_hole_cards_for_game next_state new_game
                     in
                     let%lwt () =
                       prompt_current_player new_game next_state.clients
                     in
-                    Lwt.return next_state))
+                    Lwt.return next_state)))
 
 let begin_game_now state =
   let joined_players =
     state.clients
     |> List.filter (fun c -> c.joined)
     |> List.filter_map (fun c ->
-           List.find_opt
-             (fun p -> p.Poker.Lobby.id = c.id)
-             (Poker.Lobby.players state.lobby))
+        List.find_opt
+          (fun p -> p.Poker.Lobby.id = c.id)
+          (Poker.Lobby.players state.lobby))
   in
   let game = Poker.Game.start joined_players in
   let next_state = { state with game = Some game } in
@@ -496,8 +491,8 @@ let handle_join state player_id requested_name =
               | Some host ->
                   safe_send host.output
                     (Poker.Protocol.Info
-                       "You are the host. Type /start to begin the game \
-                        (need ≥2 players).")
+                       "You are the host. Type /start to begin the game (need \
+                        ≥2 players).")
           in
           Lwt.return next_state)
 
@@ -571,8 +566,7 @@ let handle_event state push_event = function
       | Poker.Protocol.Player_action action ->
           handle_player_action state player_id action
       | Poker.Protocol.Send_chat text -> handle_chat state player_id text
-      | Poker.Protocol.Cash_out wants ->
-          handle_cash_out state player_id wants
+      | Poker.Protocol.Cash_out wants -> handle_cash_out state player_id wants
       | Poker.Protocol.Start_game -> handle_start_game state player_id
       | Poker.Protocol.Disconnect -> handle_disconnect state player_id)
   | Client_disconnected player_id -> handle_disconnect state player_id

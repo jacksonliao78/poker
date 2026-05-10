@@ -440,7 +440,9 @@ let test_resolve_showdown_picks_highest_rank _ =
   let game = { base_game with players; table } in
   let winners = Poker.Game.resolve_showdown game in
   assert_equal 2 (List.length winners);
-  let winner_ids = winners |> List.map (fun p -> p.Poker.Types.id) |> List.sort compare in
+  let winner_ids =
+    winners |> List.map (fun p -> p.Poker.Types.id) |> List.sort compare
+  in
   let expected_ids =
     [ (List.nth players 0).id; (List.nth players 1).id ] |> List.sort compare
   in
@@ -709,19 +711,17 @@ let test_next_hand_rotates_dealer _ =
   | None -> assert_failure "expected next hand to start"
   | Some next ->
       assert_equal 4 (List.length next.Poker.Types.players);
-      (* dealer rotated from player at index 0 to player previously at index 1 *)
+      (* dealer rotated from player at index 0 to player previously at index
+         1 *)
       let prev_seat_1_id = (List.nth game.players 1).id in
-      let new_dealer_id =
-        (List.nth next.players next.table.dealer_index).id
-      in
+      let new_dealer_id = (List.nth next.players next.table.dealer_index).id in
       assert_equal prev_seat_1_id new_dealer_id
 
 let test_next_hand_returns_none_when_one_player_has_chips _ =
   let game = make_four_player_game () in
   let players =
     List.mapi
-      (fun i p ->
-        if i = 0 then p else { p with Poker.Types.chips = 0 })
+      (fun i p -> if i = 0 then p else { p with Poker.Types.chips = 0 })
       game.Poker.Types.players
   in
   assert_equal None (Poker.Game.next_hand { game with players })

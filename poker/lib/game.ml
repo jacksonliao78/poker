@@ -121,14 +121,12 @@ and resolve_showdown game =
     pick 5 cards
   in
   let straight_high ranks_desc =
-    let unique_desc =
-      List.sort_uniq compare_int_desc ranks_desc
-    in
+    let unique_desc = List.sort_uniq compare_int_desc ranks_desc in
     let with_wheel =
       if List.mem 14 unique_desc then unique_desc @ [ 1 ] else unique_desc
     in
     let rec scan = function
-      | a :: (b :: (c :: (d :: (e :: _)))) as all_tail ->
+      | a :: b :: c :: d :: e :: _ as all_tail ->
           if a = b + 1 && b = c + 1 && c = d + 1 && d = e + 1 then Some a
           else scan (List.tl all_tail)
       | _ -> None
@@ -149,8 +147,7 @@ and resolve_showdown game =
             | Some count -> count
             | None -> 0
           in
-          (rank, current + 1)
-          :: List.remove_assoc rank counts)
+          (rank, current + 1) :: List.remove_assoc rank counts)
         [] ranks_desc
     in
     let groups =
@@ -206,7 +203,9 @@ and resolve_showdown game =
     List.filter (fun player -> player.status <> Folded) game.players
   in
   let hand_score player =
-    let all_cards = List.concat [ player.hole_cards; game.table.community_cards ] in
+    let all_cards =
+      List.concat [ player.hole_cards; game.table.community_cards ]
+    in
     evaluate_seven all_cards
   in
   match contenders with
@@ -299,9 +298,7 @@ let preflop_big_blind_option_pending game next_index =
   let bb = List.nth game.players (big_blind_index game) in
   bb.status = Active
   &&
-  let bb_next =
-    next_active_index game.players (big_blind_index game)
-  in
+  let bb_next = next_active_index game.players (big_blind_index game) in
   bb_next = Some (big_blind_index game)
   &&
   match next_index with
@@ -340,8 +337,7 @@ let advance_after_action game =
   let remaining_players = active_players game.players in
   let player_count = List.length game.players in
   let next_index =
-    next_active_index game.players
-      ((game.table.turn_index + 1) mod player_count)
+    next_active_index game.players ((game.table.turn_index + 1) mod player_count)
   in
   let zero_bet_round_closed =
     if game.table.current_bet <> 0 then false
@@ -355,10 +351,9 @@ let advance_after_action game =
     Hand_complete (game, List.hd remaining_players)
   else if
     betting_round_complete game.players game.table.current_bet
-    && not (preflop_big_blind_option_pending game next_index)
+    && (not (preflop_big_blind_option_pending game next_index))
     && (game.table.current_bet <> 0 || zero_bet_round_closed)
-  then
-    advance_street game
+  then advance_street game
   else
     match next_index with
     | None -> Betting_round_complete game
@@ -422,8 +417,7 @@ let award_pot game ~winner_id =
   let players =
     List.map
       (fun player ->
-        if player.id = winner_id then
-          { player with chips = player.chips + pot }
+        if player.id = winner_id then { player with chips = player.chips + pot }
         else player)
       game.players
   in
@@ -447,8 +441,7 @@ let next_hand game =
           let next =
             List.nth game.players ((game.table.dealer_index + offset) mod n_old)
           in
-          if next.chips > 0 then next
-          else next_surviving_after (offset + 1)
+          if next.chips > 0 then next else next_surviving_after (offset + 1)
       in
       let new_dealer = next_surviving_after 1 in
       let rec rotate acc = function
