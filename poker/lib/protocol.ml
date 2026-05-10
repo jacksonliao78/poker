@@ -80,7 +80,9 @@ let max_name_length = 20
 
 let legal_actions_for_player (game : Types.game_state) ~player_id =
   let current_player = List.nth game.players game.table.turn_index in
-  match List.find_opt (fun player -> player.Types.id = player_id) game.players with
+  match
+    List.find_opt (fun player -> player.Types.id = player_id) game.players
+  with
   | None -> []
   | Some player when current_player.id <> player.id -> []
   | Some player when player.status <> Types.Active -> []
@@ -109,21 +111,18 @@ let legal_actions_for_player (game : Types.game_state) ~player_id =
         then [ Can_raise game.table.min_raise ]
         else []
       in
-      if to_call > 0 then
-        [ Can_fold; Can_call to_call ] @ raise
+      if to_call > 0 then [ Can_fold; Can_call to_call ] @ raise
       else [ Can_check ] @ raise
 
 let player_view_of_game (game : Types.game_state) ~player_id =
-  match List.find_opt (fun player -> player.Types.id = player_id) game.players with
+  match
+    List.find_opt (fun player -> player.Types.id = player_id) game.players
+  with
   | None -> None
   | Some viewer ->
       let player_count = List.length game.players in
-      let small_blind_index =
-        (game.table.dealer_index + 1) mod player_count
-      in
-      let big_blind_index =
-        (game.table.dealer_index + 2) mod player_count
-      in
+      let small_blind_index = (game.table.dealer_index + 1) mod player_count in
+      let big_blind_index = (game.table.dealer_index + 2) mod player_count in
       let players =
         List.mapi
           (fun index player ->
