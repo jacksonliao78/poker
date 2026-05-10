@@ -51,6 +51,7 @@ dune exec ./bin/client.exe <host_ip> <port>
 The client prompts for a player name after connecting. In the client, plain text
 sends chat messages. Commands include:
 
+- `/start`: starts the game as the host
 - `/name <new name>`: change your displayed player name.
 - `/fold` or `/f`: fold when folding is legal.
 - `/call` or `/c`: call when calling is legal.

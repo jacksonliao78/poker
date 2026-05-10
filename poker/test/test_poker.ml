@@ -832,8 +832,9 @@ let test_next_hand_rotates_dealer _ =
   | None -> assert_failure "expected next hand to start"
   | Some next ->
       assert_equal 4 (List.length next.Poker.Types.players);
-      (* dealer rotated from player at index 0 to player previously at index
-         1 *)
+      assert_equal
+        (List.map (fun p -> p.Poker.Types.id) game.players)
+        (List.map (fun p -> p.Poker.Types.id) next.players);
       let prev_seat_1_id = (List.nth game.players 1).id in
       let new_dealer_id = (List.nth next.players next.table.dealer_index).id in
       assert_equal prev_seat_1_id new_dealer_id

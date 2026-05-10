@@ -360,14 +360,13 @@ let advance_after_action game =
     | Some turn_index ->
         Next_turn { game with table = { game.table with turn_index } }
 
-let start players =
+let start_with_dealer players ~dealer_index =
   let deck = Cards.full_deck |> Cards.shuffle in
   let hole_cards_by_player, deck = deal_hole_cards players deck in
   let players =
     List.map2 player_state_of_lobby_player players hole_cards_by_player
   in
   let player_count = List.length players in
-  let dealer_index = 0 in
   let small_blind_index = (dealer_index + 1) mod player_count in
   let big_blind_index = (dealer_index + 2) mod player_count in
   let small_blind_player = List.nth players small_blind_index in
@@ -411,6 +410,8 @@ let start players =
     big_blind = Types.default_config.big_blind;
   }
 
+let start players = start_with_dealer players ~dealer_index:0
+
 (* Move the current pot into the winner's stack and zero the pot. *)
 let award_pot game ~winner_id =
   let pot = game.table.pot in
@@ -444,13 +445,15 @@ let next_hand game =
           if next.chips > 0 then next else next_surviving_after (offset + 1)
       in
       let new_dealer = next_surviving_after 1 in
-      let rec rotate acc = function
-        | [] -> List.rev acc
-        | h :: _ as lst when h.id = new_dealer.id -> lst @ List.rev acc
-        | h :: t -> rotate (h :: acc) t
+      let rec index_of_dealer index = function
+        | [] -> 0
+        | h :: _ when h.id = new_dealer.id -> index
+        | _ :: t -> index_of_dealer (index + 1) t
       in
-      let rotated = rotate [] surviving in
-      Some (start (List.map to_lobby rotated))
+      (* Keep terminal seats stable between hands; only the dealer marker
+         moves. *)
+      let dealer_index = index_of_dealer 0 surviving in
+      Some (start_with_dealer (List.map to_lobby surviving) ~dealer_index)
 
 (* Starts next hand. *)
 let start_next_hand game =
