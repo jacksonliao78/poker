@@ -76,17 +76,26 @@ type server_message =
   | Error of string
   | Info of string
 
-(** Maximum seats accepted by the lobby server. *)
+(** [seats_total] is the maximum seat count accepted by the lobby server. *)
 val seats_total : int
 
-(** Long names are capped to keep the text UI readable. *)
+(** [max_name_length] caps display names so the terminal table can redraw
+    without uncontrolled wrapping. *)
 val max_name_length : int
 
-(** Derives turn-sensitive legal actions from the authoritative game state. *)
+(** [legal_actions_for_player game ~player_id] derives turn-sensitive legal
+    actions from the authoritative game state. Unknown players and players who
+    cannot act receive an empty action list. Requires: [game.players] is
+    nonempty and [game.table.turn_index] is a valid index into it. Raises:
+    [Failure] if [game.table.turn_index] is outside [game.players];
+    [Invalid_argument] if [game.table.turn_index] is negative. *)
 val legal_actions_for_player :
   Types.game_state -> player_id:int -> legal_action list
 
-(** Builds the personalized table view without leaking another player's cards.
-*)
+(** [player_view_of_game game ~player_id] builds the personalized table view
+    without leaking another player's cards. Returns [None] for an unknown
+    player. Requires: [game.players] is nonempty, and dealer/turn indexes are
+    valid. Raises: [Division_by_zero] if [game.players] is empty and [player_id]
+    is present in malformed state. *)
 val player_view_of_game :
   Types.game_state -> player_id:int -> player_view option

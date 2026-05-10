@@ -9,23 +9,32 @@ type player = {
 (** Internal lobby state tracked by the server. *)
 type t
 
-(** Empty lobby before any connections are accepted. *)
+(** [empty ()] returns the lobby state before any connections are accepted. *)
 val empty : unit -> t
 
-(** Allocates the next seat with the default starting stack. *)
+(** [add_player lobby] allocates the next seat with the default starting stack.
+    The returned player is the same seat appended to the returned lobby.
+    Requires: [lobby] was produced by this module, so [next_id] remains unique.
+*)
 val add_player : t -> t * player
 
-(** Updates a player's display name. *)
+(** [rename_player lobby ~player_id name] updates a player's display name.
+    Unknown [player_id] values leave the lobby unchanged. Requires: [name] is
+    already trimmed and capped for display. *)
 val rename_player : t -> player_id:int -> string -> t
 
-(** Drops a seat after disconnect. *)
+(** [remove_player lobby ~player_id] drops a seat after disconnect. Unknown
+    [player_id] values leave the lobby unchanged. *)
 val remove_player : t -> player_id:int -> t
 
-(** Looks up the current display name. *)
+(** [player_name lobby ~player_id] looks up the current display name for
+    [player_id]. *)
 val player_name : t -> player_id:int -> string option
 
-(** Public player list in seat order. *)
+(** [players lobby] returns the public player list in seat order. *)
 val players : t -> player list
 
-(** Lobby projection sent to clients after each change. *)
+(** [snapshot lobby] returns the lobby projection sent to clients after each
+    change. Requires: [lobby] does not contain more than [Protocol.seats_total]
+    players. *)
 val snapshot : t -> Protocol.lobby_snapshot

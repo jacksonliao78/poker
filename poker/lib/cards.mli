@@ -1,22 +1,23 @@
 open Types
 
-(** All suits in deck-construction order. *)
+(** [all_suits] lists every suit in deck-construction order. *)
 val all_suits : suit list
 
-(** All ranks in ascending order. *)
+(** [all_ranks] lists every rank in ascending order. *)
 val all_ranks : rank list
 
-(** A full standard 52-card deck before shuffling. *)
+(** [full_deck] is a standard 52-card deck before shuffling. *)
 val full_deck : card list
 
-(** Textual rendering of card. *)
+(** [card_to_string card] renders [card] in compact protocol-friendly form. *)
 val card_to_string : card -> string
 
-(** Verbose textual rendering of card. *)
+(** [card_to_long_string card] renders [card] in display-friendly English. *)
 val card_to_long_string : card -> string
 
-(** Returns the first [n] cards and the remaining deck. *)
+(** [deal_n n deck] returns the first [n] cards and the remaining deck. If
+    [deck] has fewer than [n] cards, all available cards are dealt. *)
 val deal_n : int -> card list -> card list * card list
 
-(** Returns a randomized permutation of [deck]. *)
+(** [shuffle deck] returns a randomized permutation of [deck]. *)
 val shuffle : card list -> card list

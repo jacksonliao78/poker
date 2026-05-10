@@ -64,15 +64,6 @@ let broadcast_game_update state game =
   (* Each view is personalized because hole cards are private. *)
   Lwt_list.iter_p (send_game_update game) state.clients
 
-(* Normalizes player name. *)
-let trim_name raw_name =
-  let trimmed = String.trim raw_name in
-  if trimmed = "" then None
-  else
-    let max_len = Poker.Protocol.max_name_length in
-    let length = min (String.length trimmed) max_len in
-    Some (String.sub trimmed 0 length)
-
 let find_client state player_id =
   List.find_opt (fun client -> client.id = player_id) state.clients
 
@@ -103,72 +94,8 @@ let joined_client_count state =
     (fun count client -> if client.joined then count + 1 else count)
     0 state.clients
 
-let hole_cards_message cards =
-  cards
-  |> List.map Poker.Cards.card_to_long_string
-  |> String.concat " and "
-  |> Printf.sprintf "Your hole cards: %s"
-
-let player_name_at players index = (List.nth players index).Poker.Types.name
-
-let community_cards_message cards =
-  cards
-  |> List.map Poker.Cards.card_to_long_string
-  |> String.concat ", " |> Printf.sprintf "Board: %s"
-
-let reveal_message_for_street (game : Poker.Types.game_state) =
-  let cards = game.table.community_cards in
-  match (game.table.street, List.length cards) with
-  | Flop, 3 ->
-      Some (Printf.sprintf "Flop revealed. %s" (community_cards_message cards))
-  | Turn, 4 ->
-      Some (Printf.sprintf "Turn revealed. %s" (community_cards_message cards))
-  | River, 5 ->
-      Some (Printf.sprintf "River revealed. %s" (community_cards_message cards))
-  | _ -> None
-
-let player_name_at players index = (List.nth players index).Poker.Types.name
-
-let current_turn_message (game : Poker.Types.game_state) =
-  let current_player =
-    List.nth game.Poker.Types.players game.table.turn_index
-  in
-  Printf.sprintf "Player's turn: %s" current_player.name
-
-let table_setup_messages (game : Poker.Types.game_state) =
-  let players = game.Poker.Types.players in
-  let dealer_name = player_name_at players game.table.dealer_index in
-  let small_blind_index =
-    (game.table.dealer_index + 1) mod List.length players
-  in
-  let big_blind_index = (game.table.dealer_index + 2) mod List.length players in
-  let small_blind_player = List.nth players small_blind_index in
-  let big_blind_player = List.nth players big_blind_index in
-  let blind_message label amount player =
-    if player.Poker.Types.round_bet < amount then
-      Printf.sprintf "%s: %s is all-in for $%d" label player.name
-        player.round_bet
-    else Printf.sprintf "%s: %s posts $%d" label player.name amount
-  in
-  [
-    Printf.sprintf "Dealer: %s" dealer_name;
-    blind_message "Small blind" game.small_blind small_blind_player;
-    blind_message "Big blind" game.big_blind big_blind_player;
-    Printf.sprintf "Pot: $%d. Current bet: $%d." game.table.pot
-      game.table.current_bet;
-    current_turn_message game;
-  ]
-
 let prompt_current_player (_game : Poker.Types.game_state) _clients =
   Lwt.return_unit
-
-let public_action_message name action =
-  match action with
-  | Poker.Types.Fold -> Printf.sprintf "%s folds." name
-  | Check -> Printf.sprintf "%s checks." name
-  | Call -> Printf.sprintf "%s calls." name
-  | Raise amount -> Printf.sprintf "%s raises by $%d." name amount
-  | Bet amount -> Printf.sprintf "%s bets $%d." name amount
 
 let send_balance_update state player_id players =
   match
@@ -193,21 +120,9 @@ let send_private_hole_cards_for_game state (game : Poker.Types.game_state) =
       | None -> Lwt.return_unit
       | Some player ->
           safe_send client.output
-            (Poker.Protocol.Info (hole_cards_message player.hole_cards)))
+            (Poker.Protocol.Info
+               (Poker.Server_messages.hole_cards_message player.hole_cards)))
     state.clients
-
-let final_standings_messages (game : Poker.Types.game_state) =
-  let standings =
-    game.Poker.Types.players
-    |> List.map (fun p -> Printf.sprintf "%s: $%d" p.Poker.Types.name p.chips)
-  in
-  "Game over. Final standings:" :: standings
-
-let everyone_voted_to_cash_out (game : Poker.Types.game_state) votes =
-  let surviving = List.filter (fun p -> p.Poker.Types.chips > 0) game.players in
-  match surviving with
-  | [] -> false
-  | _ -> List.for_all (fun p -> List.mem p.Poker.Types.id votes) surviving
 
 let handle_player_action state player_id action =
   match state.game with
@@ -242,7 +157,8 @@ let handle_player_action state player_id action =
           in
           let%lwt () =
             broadcast state
-              (Poker.Protocol.Info (public_action_message actor_name action))
+              (Poker.Protocol.Info
+                 (Poker.Server_messages.public_action_message actor_name action))
           in
           match outcome with
           | Poker.Game.Next_turn next_game ->
@@ -252,14 +168,17 @@ let handle_player_action state player_id action =
               in
               let%lwt () = broadcast_game_update next_state next_game in
               let%lwt () =
-                match reveal_message_for_street next_game with
+                match
+                  Poker.Server_messages.reveal_message_for_street next_game
+                with
                 | None -> Lwt.return_unit
                 | Some message ->
                     broadcast next_state (Poker.Protocol.Info message)
               in
               let%lwt () =
                 broadcast next_state
-                  (Poker.Protocol.Info (current_turn_message next_game))
+                  (Poker.Protocol.Info
+                     (Poker.Server_messages.current_turn_message next_game))
               in
               let%lwt () =
                 send_private_hole_cards_for_game next_state next_game
@@ -304,7 +223,8 @@ let handle_player_action state player_id action =
                         pot_amount))
               in
               let end_now =
-                everyone_voted_to_cash_out settled state.cash_out_votes
+                Poker.Server_messages.everyone_voted_to_cash_out settled
+                  state.cash_out_votes
               in
               if end_now then
                 let next_state =
@@ -314,7 +234,7 @@ let handle_player_action state player_id action =
                   Lwt_list.iter_s
                     (fun text ->
                       broadcast next_state (Poker.Protocol.Info text))
-                    (final_standings_messages settled)
+                    (Poker.Server_messages.final_standings_messages settled)
                 in
                 Lwt.return next_state
               else
@@ -327,7 +247,7 @@ let handle_player_action state player_id action =
                       Lwt_list.iter_s
                         (fun text ->
                           broadcast next_state (Poker.Protocol.Info text))
-                        (final_standings_messages settled)
+                        (Poker.Server_messages.final_standings_messages settled)
                     in
                     Lwt.return next_state
                 | Some new_game ->
@@ -340,7 +260,7 @@ let handle_player_action state player_id action =
                       Lwt_list.iter_s
                         (fun text ->
                           broadcast next_state (Poker.Protocol.Info text))
-                        (table_setup_messages new_game)
+                        (Poker.Server_messages.table_setup_messages new_game)
                     in
                     let%lwt () = broadcast_game_update next_state new_game in
                     let%lwt () =
@@ -371,7 +291,7 @@ let begin_game_now state =
   let%lwt () =
     Lwt_list.iter_s
       (fun text -> broadcast next_state (Poker.Protocol.Info text))
-      (table_setup_messages game)
+      (Poker.Server_messages.table_setup_messages game)
   in
   let%lwt () = broadcast_game_update next_state game in
   let%lwt () = prompt_current_player game next_state.clients in
@@ -437,7 +357,7 @@ let handle_new_connection state input output push_event =
     Lwt.return next_state
 
 let handle_join state player_id requested_name =
-  match trim_name requested_name with
+  match Poker.Server_messages.trim_name requested_name with
   | None -> (
       match find_client state player_id with
       | None -> Lwt.return state
@@ -581,8 +501,7 @@ let rec event_loop state stream push_event =
 
 let socket_address port = Unix.ADDR_INET (Unix.inet_addr_any, port)
 
-(* Accepted sockets are turned into queue events instead of mutating state
-   directly. *)
+(* Accepted sockets are turned into queue events. *)
 let rec accept_loop socket push_event =
   let%lwt client_socket, _ = Lwt_unix.accept socket in
   let output_socket = Lwt_unix.dup client_socket in

@@ -432,35 +432,13 @@ let rec listen_for_updates state input =
   let%lwt () = handle_server_message state message in
   listen_for_updates state input
 
-let words_of_line line =
-  line |> String.trim |> String.split_on_char ' '
-  |> List.filter (fun word -> word <> "")
-
-let has_action predicate state =
-  match state.game with
-  | None -> false
-  | Some view -> List.exists predicate view.Poker.Protocol.legal_actions
-
-let raise_minimum state =
-  match state.game with
-  | None -> None
-  | Some view ->
-      List.find_map
-        (function
-          | Poker.Protocol.Can_raise amount -> Some amount
-          | _ -> None)
-        view.legal_actions
-
-let action_command = function
-  | Poker.Protocol.Can_fold -> "/fold"
-  | Can_check -> "/check"
-  | Can_call _ -> "/call"
-  | Can_raise _ -> "/raise "
-
-let available_action_commands state =
+let legal_actions state =
   match state.game with
   | None -> []
-  | Some view -> List.map action_command view.Poker.Protocol.legal_actions
+  | Some view -> view.Poker.Protocol.legal_actions
+
+let available_action_commands state =
+  Poker.Client_command.available_action_commands (legal_actions state)
 
 let cycle_action state direction =
   match available_action_commands state with
@@ -480,104 +458,28 @@ let reset_input state =
   state.input_buffer <- "";
   state.action_index <- None
 
-let set_recent_preference state value =
-  match String.lowercase_ascii value with
-  | "show" ->
+let set_recent_preference state = function
+  | Poker.Client_command.Show_recent ->
       state.show_recent_activity <- true;
       add_info state "Recent activity is visible.";
       Ok None
-  | "hide" ->
+  | Poker.Client_command.Hide_recent ->
       state.show_recent_activity <- false;
       add_info state "Recent activity is hidden.";
       Ok None
-  | "clear" ->
+  | Poker.Client_command.Clear_recent ->
       state.events <- [];
       Ok None
-  | _ ->
-      Error "Use /pref recent show, /pref recent hide, or /pref recent clear."
-
-let handle_preference state words =
-  match words with
-  | [ "/pref"; "recent"; value ] -> set_recent_preference state value
-  | [ "/pref" ] ->
-      Error "Use /pref recent show, /pref recent hide, or /pref recent clear."
-  | [ "/pref"; _ ] ->
-      Error "Use /pref recent show, /pref recent hide, or /pref recent clear."
-  | "/pref" :: _ ->
-      Error "Use /pref recent show, /pref recent hide, or /pref recent clear."
-  | _ -> Error "Unknown preference command."
-
-let poker_action_allowed state action =
-  let open Poker.Protocol in
-  match action with
-  | Poker.Types.Fold ->
-      has_action
-        (function
-          | Can_fold -> true
-          | _ -> false)
-        state
-  | Check ->
-      has_action
-        (function
-          | Can_check -> true
-          | _ -> false)
-        state
-  | Call ->
-      has_action
-        (function
-          | Can_call _ -> true
-          | _ -> false)
-        state
-  | Raise amount -> (
-      match raise_minimum state with
-      | Some minimum -> amount >= minimum
-      | None -> false)
-  | Bet _ -> false
 
 let command_to_message state line =
-  let trimmed = String.trim line in
-  let words = words_of_line line in
-  if trimmed = "" then Ok None
-  else if String.get trimmed 0 <> '/' then
-    Ok (Some (Poker.Protocol.Send_chat trimmed))
-  else if trimmed = "/quit" then Ok (Some Poker.Protocol.Disconnect)
-  else if trimmed = "/cashout" || trimmed = "/cash_out" then
-    Ok (Some (Poker.Protocol.Cash_out true))
-  else if trimmed = "/cashin" || trimmed = "/cash_in" then
-    Ok (Some (Poker.Protocol.Cash_out false))
-  else if trimmed = "/start" then Ok (Some Poker.Protocol.Start_game)
-  else if List.length words > 0 && List.hd words = "/pref" then
-    handle_preference state words
-  else if String.length trimmed >= 6 && String.sub trimmed 0 6 = "/name " then
-    Ok
-      (Some
-         (Poker.Protocol.Join (String.sub trimmed 6 (String.length trimmed - 6))))
-  else
-    let action_result =
-      match words with
-      | [ "/fold" ] | [ "/f" ] -> Some (Ok Poker.Types.Fold)
-      | [ "/call" ] | [ "/c" ] -> Some (Ok Poker.Types.Call)
-      | [ "/check" ] | [ "/x" ] -> Some (Ok Poker.Types.Check)
-      | [ "/raise"; amount ] | [ "/r"; amount ] -> (
-          match int_of_string_opt amount with
-          | Some amount when amount > 0 -> Some (Ok (Poker.Types.Raise amount))
-          | _ -> Some (Error "Raise needs a positive amount, e.g. /raise 20."))
-      | "/raise" :: _ | "/r" :: _ ->
-          Some (Error "Raise needs a positive amount, e.g. /raise 20.")
-      | _ ->
-          Some
-            (Error
-               "Unknown command. Type chat without /, or use /name, /pref, \
-                /fold, /call, /check, /raise, /start, /cashout, /cashin, \
-                /quit.")
-    in
-    match action_result with
-    | None -> Ok (Some (Poker.Protocol.Send_chat trimmed))
-    | Some (Error message) -> Error message
-    | Some (Ok action) ->
-        if poker_action_allowed state action then
-          Ok (Some (Poker.Protocol.Player_action action))
-        else Error "That poker action is not available right now."
+  match
+    Poker.Client_command.parse ~legal_actions:(legal_actions state) line
+  with
+  | Poker.Client_command.Noop -> Ok None
+  | Poker.Client_command.Send message -> Ok (Some message)
+  | Poker.Client_command.Set_preference preference ->
+      set_recent_preference state preference
+  | Poker.Client_command.Error message -> Error message
 
 let with_raw_terminal f =
   let fd = Unix.stdin in

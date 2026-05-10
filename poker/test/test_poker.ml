@@ -507,6 +507,127 @@ let test_terminal_legal_action_rendering _ =
     (contains_substring raise_text "/raise");
   assert_bool "raise text mentions min" (contains_substring raise_text "min")
 
+let expect_send expected actual =
+  match actual with
+  | Poker.Client_command.Send message -> assert_equal expected message
+  | Poker.Client_command.Noop -> assert_failure "expected Send, got Noop"
+  | Set_preference _ -> assert_failure "expected Send, got Set_preference"
+  | Error message -> assert_failure ("expected Send, got Error: " ^ message)
+
+let test_client_command_parse_chat_and_lobby_commands _ =
+  expect_send (Poker.Protocol.Send_chat "hello table")
+    (Poker.Client_command.parse ~legal_actions:[] "  hello table  ");
+  expect_send (Poker.Protocol.Join "Ethan")
+    (Poker.Client_command.parse ~legal_actions:[] "/name Ethan");
+  expect_send Poker.Protocol.Start_game
+    (Poker.Client_command.parse ~legal_actions:[] "/start");
+  expect_send (Poker.Protocol.Cash_out true)
+    (Poker.Client_command.parse ~legal_actions:[] "/cashout");
+  assert_equal Poker.Client_command.Noop
+    (Poker.Client_command.parse ~legal_actions:[] "   ")
+
+let test_client_command_parse_preferences _ =
+  assert_equal
+    (Poker.Client_command.Set_preference Poker.Client_command.Hide_recent)
+    (Poker.Client_command.parse ~legal_actions:[] "/pref recent hide");
+  assert_equal
+    (Poker.Client_command.Set_preference Poker.Client_command.Clear_recent)
+    (Poker.Client_command.parse ~legal_actions:[] "/pref recent clear");
+  match
+    Poker.Client_command.parse ~legal_actions:[] "/pref recent sometimes"
+  with
+  | Poker.Client_command.Error message ->
+      assert_equal
+        "Use /pref recent show, /pref recent hide, or /pref recent clear."
+        message
+  | _ -> assert_failure "expected bad preference to return Error"
+
+let test_client_command_rejects_unavailable_actions _ =
+  match Poker.Client_command.parse ~legal_actions:[] "/call" with
+  | Poker.Client_command.Error message ->
+      assert_equal "That poker action is not available right now." message
+  | _ -> assert_failure "expected unavailable /call to return Error"
+
+let test_client_command_accepts_available_actions _ =
+  let legal_actions = [ Poker.Protocol.Can_fold; Can_call 10; Can_raise 20 ] in
+  expect_send (Poker.Protocol.Player_action Poker.Types.Call)
+    (Poker.Client_command.parse ~legal_actions "/call");
+  expect_send (Poker.Protocol.Player_action (Poker.Types.Raise 25))
+    (Poker.Client_command.parse ~legal_actions "/raise 25");
+  match Poker.Client_command.parse ~legal_actions "/raise 10" with
+  | Poker.Client_command.Error message ->
+      assert_equal "That poker action is not available right now." message
+  | _ -> assert_failure "expected below-min raise to return Error"
+
+let test_client_command_action_presets _ =
+  assert_equal
+    [ "/fold"; "/check"; "/call"; "/raise " ]
+    (Poker.Client_command.available_action_commands
+       [ Poker.Protocol.Can_fold; Can_check; Can_call 10; Can_raise 20 ])
+
+let test_server_messages_trim_name _ =
+  assert_equal None (Poker.Server_messages.trim_name "   ");
+  assert_equal (Some "Ethan") (Poker.Server_messages.trim_name "  Ethan  ");
+  let long_name = String.make (Poker.Protocol.max_name_length + 5) 'x' in
+  assert_equal
+    (Some (String.make Poker.Protocol.max_name_length 'x'))
+    (Poker.Server_messages.trim_name long_name)
+
+let test_server_messages_card_and_action_text _ =
+  assert_equal "Your hole cards: Ace of Spades and 10 of Hearts"
+    (Poker.Server_messages.hole_cards_message [ ace_spades; ten_hearts ]);
+  assert_equal "Board: Ace of Spades, 10 of Hearts"
+    (Poker.Server_messages.community_cards_message [ ace_spades; ten_hearts ]);
+  assert_equal "Andy folds."
+    (Poker.Server_messages.public_action_message "Andy" Poker.Types.Fold);
+  assert_equal "Jackson raises by $20."
+    (Poker.Server_messages.public_action_message "Jackson"
+       (Poker.Types.Raise 20))
+
+let test_server_messages_table_setup_and_turn _ =
+  let game = make_four_player_game () in
+  assert_equal "Player's turn: Player 4"
+    (Poker.Server_messages.current_turn_message game);
+  assert_equal
+    [
+      "Dealer: Player 1";
+      "Small blind: Player 2 posts $5";
+      "Big blind: Player 3 posts $10";
+      "Pot: $15. Current bet: $10.";
+      "Player's turn: Player 4";
+    ]
+    (Poker.Server_messages.table_setup_messages game)
+
+let test_server_messages_reveal_and_cashout _ =
+  let game = make_four_player_game () in
+  let game = Poker.Game.draw_community_cards game ~count:3 in
+  let game =
+    { game with Poker.Types.table = { game.table with street = Flop } }
+  in
+  match Poker.Server_messages.reveal_message_for_street game with
+  | None -> assert_failure "expected flop reveal message"
+  | Some message ->
+      assert_bool "flop reveal mentions board"
+        (contains_substring message "Flop revealed. Board:");
+      let votes =
+        game.Poker.Types.players |> List.map (fun p -> p.Poker.Types.id)
+      in
+      assert_bool "all surviving players voted"
+        (Poker.Server_messages.everyone_voted_to_cash_out game votes);
+      assert_bool "missing vote prevents cashout"
+        (not
+           (Poker.Server_messages.everyone_voted_to_cash_out game
+              (List.tl votes)))
+
+let test_server_messages_final_standings _ =
+  let game = make_four_player_game () in
+  match Poker.Server_messages.final_standings_messages game with
+  | "Game over. Final standings:" :: standings ->
+      assert_equal 4 (List.length standings);
+      assert_bool "standings include player stack"
+        (contains_substring (List.hd standings) "Player 1: $500")
+  | _ -> assert_failure "expected final standings header"
+
 let test_deal_n_beyond_deck_returns_all _ =
   let short_deck =
     [
@@ -785,6 +906,24 @@ let tests =
          "terminal_street_and_status" >:: test_terminal_street_and_status;
          "terminal_legal_action_rendering"
          >:: test_terminal_legal_action_rendering;
+         "client_command_parse_chat_and_lobby_commands"
+         >:: test_client_command_parse_chat_and_lobby_commands;
+         "client_command_parse_preferences"
+         >:: test_client_command_parse_preferences;
+         "client_command_rejects_unavailable_actions"
+         >:: test_client_command_rejects_unavailable_actions;
+         "client_command_accepts_available_actions"
+         >:: test_client_command_accepts_available_actions;
+         "client_command_action_presets" >:: test_client_command_action_presets;
+         "server_messages_trim_name" >:: test_server_messages_trim_name;
+         "server_messages_card_and_action_text"
+         >:: test_server_messages_card_and_action_text;
+         "server_messages_table_setup_and_turn"
+         >:: test_server_messages_table_setup_and_turn;
+         "server_messages_reveal_and_cashout"
+         >:: test_server_messages_reveal_and_cashout;
+         "server_messages_final_standings"
+         >:: test_server_messages_final_standings;
          "deal_n_beyond_deck_returns_all"
          >:: test_deal_n_beyond_deck_returns_all;
          "lobby_snapshot_tracks_open_seats"
